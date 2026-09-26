@@ -1,0 +1,22 @@
+{
+  "id": "mdreader.image-insert",
+  "name": "图片插入与缩放",
+  "version": "1.0.2",
+  "api_version": "1",
+  "app_version_range": ">=0.2.8",
+  "entrypoint": "plugin.py",
+  "capabilities": [
+    "editor.image_insert"
+  ],
+  "commands": [
+    {
+      "id": "insert",
+      "title": "图片插入与缩放",
+      "capability": "editor.image_insert",
+      "method": "insert_image"
+    }
+  ],
+  "dependencies": [],
+  "publisher": "MDReader",
+  "description": "离线插件，适用于 Windows x64 / Python 3.12；依赖随包提供。"
+}

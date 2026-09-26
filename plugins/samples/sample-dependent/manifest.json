@@ -1,0 +1,26 @@
+{
+  "id": "mdreader.sample-dependent",
+  "name": "样例插件：依赖格式 B 的导出（机制验证）",
+  "version": "1.0.0",
+  "api_version": "1",
+  "app_version_range": ">=0.2.0",
+  "entrypoint": "plugin.py",
+  "capabilities": ["export.format"],
+  "commands": [
+    {
+      "id": "export.dependent",
+      "title": "样例格式：依赖 B（机制验证）",
+      "capability": "export.format",
+      "method": "export",
+      "format": "sample-dep",
+      "extension": "sampledep",
+      "media_type": "application/x-mdreader-sample-dep",
+      "magic": "53414d5044",
+      "max_bytes": 1048576,
+      "description": "用于验证依赖检查：依赖未安装或未启用时本插件不可用"
+    }
+  ],
+  "dependencies": ["mdreader.sample-export-b"],
+  "publisher": "MDReader 测试样例",
+  "description": "只用于验证插件机制里的依赖状态与启用前检查。"
+}

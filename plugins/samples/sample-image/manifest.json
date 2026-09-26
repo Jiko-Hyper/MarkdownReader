@@ -1,0 +1,21 @@
+{
+  "id": "mdreader.sample-image",
+  "name": "样例插件：图片插入（机制验证）",
+  "version": "1.0.0",
+  "api_version": "1",
+  "app_version_range": ">=0.2.0",
+  "entrypoint": "plugin.py",
+  "capabilities": ["editor.image_insert"],
+  "commands": [
+    {
+      "id": "insert.image",
+      "title": "插入图片（样例）",
+      "capability": "editor.image_insert",
+      "method": "insert_image",
+      "description": "把选中的图片暂存到任务工作目录，并给出 Markdown 插入方案"
+    }
+  ],
+  "dependencies": [],
+  "publisher": "MDReader 测试样例",
+  "description": "只用于验证插件机制：不修改用户文档，产物由宿主校验后再决定是否写入。"
+}

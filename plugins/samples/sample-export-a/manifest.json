@@ -1,0 +1,26 @@
+{
+  "id": "mdreader.sample-export-a",
+  "name": "样例插件：导出格式 A（机制验证）",
+  "version": "1.0.0",
+  "api_version": "1",
+  "app_version_range": ">=0.2.0",
+  "entrypoint": "plugin.py",
+  "capabilities": ["export.format"],
+  "commands": [
+    {
+      "id": "export.samplea",
+      "title": "样例格式 A（不是真正的 PDF/Word）",
+      "capability": "export.format",
+      "method": "export",
+      "format": "sample-a",
+      "extension": "samplea",
+      "media_type": "application/x-mdreader-sample-a",
+      "magic": "53414d504100",
+      "max_bytes": 1048576,
+      "description": "把当前文档快照写成 .samplea 文件，用于验证导出插件协议"
+    }
+  ],
+  "dependencies": [],
+  "publisher": "MDReader 测试样例",
+  "description": "只用于验证插件机制：产物不是 PDF，也不是 Word，样式与分页能力不在此插件内。"
+}

@@ -1,0 +1,26 @@
+{
+  "id": "mdreader.export-pdf",
+  "name": "Markdown 转 PDF",
+  "version": "1.0.2",
+  "api_version": "1",
+  "app_version_range": ">=0.2.8",
+  "entrypoint": "plugin.py",
+  "capabilities": [
+    "export.format"
+  ],
+  "commands": [
+    {
+      "id": "export",
+      "title": "Markdown 转 PDF",
+      "capability": "export.format",
+      "method": "export_document",
+      "format": "pdf",
+      "extension": "pdf",
+      "magic": "25504446",
+      "media_type": "application/pdf"
+    }
+  ],
+  "dependencies": [],
+  "publisher": "MDReader",
+  "description": "离线插件，适用于 Windows x64 / Python 3.12；依赖随包提供。"
+}

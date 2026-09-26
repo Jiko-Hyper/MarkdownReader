@@ -1,0 +1,26 @@
+{
+  "id": "mdreader.export-docx",
+  "name": "Markdown 转 Word",
+  "version": "1.0.2",
+  "api_version": "1",
+  "app_version_range": ">=0.2.8",
+  "entrypoint": "plugin.py",
+  "capabilities": [
+    "export.format"
+  ],
+  "commands": [
+    {
+      "id": "export",
+      "title": "Markdown 转 Word",
+      "capability": "export.format",
+      "method": "export_document",
+      "format": "docx",
+      "extension": "docx",
+      "magic": "504b0304",
+      "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    }
+  ],
+  "dependencies": [],
+  "publisher": "MDReader",
+  "description": "离线插件，适用于 Windows x64 / Python 3.12；依赖随包提供。"
+}

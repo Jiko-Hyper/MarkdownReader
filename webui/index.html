@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MDReader · Markdown 阅读与项目管理</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app">
+  <!-- ================= sidebar ================= -->
+  <aside id="sidebar">
+    <div class="side-head">
+      <div class="brand">
+        <span class="logo">MD</span>
+        <span>MDReader</span>
+        <small id="versionTag"></small>
+      </div>
+    </div>
+
+    <div class="side-block">
+      <label class="lb" for="rootSelect">我的文件夹（直接改原文件）</label>
+      <select id="rootSelect"></select>
+      <div class="proj-actions" style="grid-template-columns:1fr 1fr;margin-top:6px">
+        <button class="btn sm" id="btnOpenFolder" type="button">📂 打开文件夹</button>
+        <button class="btn sm" id="btnNewFolderDoc" type="button">＋ 新建 Markdown</button>
+        <button class="btn sm" id="btnRefreshFolder" type="button">⟳ 刷新</button>
+        <button class="btn sm" id="btnRemoveFolder" type="button">✕ 从列表移除</button>
+      </div>
+      <div class="folder-meta" id="folderMeta"></div>
+      <div id="folderTree"></div>
+    </div>
+
+    <div class="side-block">
+      <label class="lb" for="projectSelect">项目</label>
+      <select id="projectSelect"></select>
+      <div class="proj-actions">
+        <button class="btn sm" id="btnNewProject" type="button">＋ 新建项目</button>
+        <button class="btn sm" id="btnImportDir" type="button">⬇ 导入文件夹</button>
+        <button class="btn sm" id="btnRenameProject" type="button">✎ 项目改名</button>
+        <button class="btn sm" id="btnRevealProject" type="button">🗀 打开目录</button>
+        <button class="btn sm" id="btnRefresh" type="button" style="grid-column:1 / -1">⟳ 刷新（重新读取磁盘）</button>
+      </div>
+      <div class="proj-meta" id="projectMeta"></div>
+    </div>
+
+    <div class="side-block">
+      <label class="lb" for="searchInput">搜索文档</label>
+      <input type="search" id="searchInput" placeholder="输入关键词，回车搜索…" autocomplete="off">
+      <div class="hits" id="hits" style="margin-top:8px;display:none;max-height:230px;overflow:auto"></div>
+    </div>
+
+    <div class="side-block" id="recentBlock">
+      <label class="lb">最近打开 · <span id="recentCount">0</span>（不导入，直接改原文件）</label>
+      <div class="proj-actions" style="grid-template-columns:1fr 1fr;margin-top:0">
+        <button class="btn sm" id="btnOpenLocal" type="button">📂 打开本地文件</button>
+        <button class="btn sm" id="btnNewLoose" type="button">＋ 新建临时文档</button>
+      </div>
+      <label class="lb" for="recentSearch" style="margin-top:10px">搜索最近打开</label>
+      <input type="search" id="recentSearch" placeholder="文件名或路径…" autocomplete="off">
+      <div id="recentList" style="margin-top:8px;max-height:34vh;overflow:auto"></div>
+    </div>
+
+    <div class="side-block" id="pluginBlock">
+      <label class="lb">插件 · <span id="pluginCount">0</span> 个可用</label>
+      <div class="proj-actions" style="grid-template-columns:1fr 1fr;margin-top:0">
+        <button class="btn sm" id="btnPlugins" type="button">🧩 插件管理</button>
+        <button class="btn sm" id="btnInsertImage" type="button" disabled
+                title="选择图片文件插入；在编辑器里直接 Ctrl+V 粘贴截图、或把图片拖进窗口也一样">🖼 插入图片</button>
+      </div>
+      <div class="folder-meta" id="pluginMeta"></div>
+      <select id="exportFormat" style="display:none"></select>
+      <button class="btn sm" id="btnExportPlugin" type="button" style="display:none;margin-top:6px">⤓ 用插件导出当前文档</button>
+      <input type="file" id="pluginImageFile" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" hidden>
+      <input type="file" id="pluginPackageFile" accept=".zip,.mdplugin" hidden>
+    </div>
+
+    <div class="tree-head">
+      <span>项目文档 · <span id="docCount">0</span></span>
+      <span>
+        <button class="btn ghost sm" id="btnNewDoc" type="button" title="新建文档">＋</button>
+        <button class="btn ghost sm" id="btnImportFiles" type="button" title="导入 md 文件">⬆</button>
+      </span>
+    </div>
+    <div id="tree"></div>
+    <div class="drop-hint">把 .md 文件拖进来：直接阅读修改原文件<br>拖文件夹则导入</div>
+  </aside>
+
+  <!-- ================= main ================= -->
+  <section id="main">
+    <div id="topbar">
+      <button class="btn ghost icon" id="btnCollapse" type="button" title="折叠侧栏 (Ctrl+B)">☰</button>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="seg" id="modeSeg">
+        <button type="button" data-mode="render" class="on">📖 阅读</button>
+        <button type="button" data-mode="source">✎ 源码</button>
+      </div>
+      <div class="toolbar">
+        <button class="btn sm" id="btnSave" type="button" title="保存 (Ctrl+S)" disabled>💾 保存</button>
+        <button class="btn sm" id="btnExport" type="button" disabled>⤓ 导出 HTML</button>
+        <button class="btn sm" id="btnExportAll" type="button">⤓ 导出整本</button>
+        <button class="btn sm" id="btnRenameDoc" type="button" disabled>✎ 重命名</button>
+        <button class="btn sm danger" id="btnDeleteDoc" type="button" disabled>🗑 删除</button>
+        <button class="btn sm" id="btnFind" type="button" title="文档内查找 (Ctrl+F)">🔍 查找</button>
+        <button class="btn sm" id="btnLinks" type="button" title="检查当前文档里的本地引用">🔗 检查链接</button>
+        <button class="btn sm" id="btnOutline" type="button" title="标题导航 (Ctrl+L)">📑 目录</button>
+        <details class="theme-select">
+          <summary class="btn sm" id="btnTheme">🌗 主题 ▾</summary>
+          <div class="theme-options" role="group" aria-label="阅读主题">
+          <button type="button" data-theme-choice="light" aria-pressed="true">明亮</button>
+          <button type="button" data-theme-choice="dark" aria-pressed="false">夜间</button>
+          <button type="button" data-theme-choice="eye" aria-pressed="false">护眼</button>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div id="findBar" class="find-bar" hidden>
+      <input type="search" id="findInput" placeholder="在文档中查找…" autocomplete="off">
+      <span class="find-count" id="findCount"></span>
+      <button class="btn sm" id="findPrev" type="button">上一处</button>
+      <button class="btn sm" id="findNext" type="button">下一处</button>
+      <button class="btn ghost sm" id="findClose" type="button">关闭</button>
+    </div>
+    <div id="outlinePanel" class="outline-panel" hidden></div>
+
+    <div id="content">
+      <div id="viewRender">
+        <div class="doc-shell" id="renderHost"></div>
+      </div>
+      <div id="viewSource">
+        <div class="editor-bar">
+          <span class="dirty-dot"></span>
+          <span class="dirty-label">有未保存的修改</span>
+          <span id="editorInfo" style="margin-left:auto"></span>
+        </div>
+        <div class="format-bar" id="formatBar">
+          <button class="btn sm" id="fmtTable" type="button" title="插入表格 (Ctrl+Shift+T)">▦ 表格</button>
+          <details class="fmt-select" id="fmtFormula">
+            <summary class="btn sm" title="插入数学公式">∑ 公式 ▾</summary>
+            <div class="theme-options" role="group" aria-label="公式类型">
+              <button type="button" data-formula="formula_inline">行内公式 $x$</button>
+              <button type="button" data-formula="formula_block">独立公式 $$…$$</button>
+            </div>
+          </details>
+          <button class="btn sm" id="fmtEditTable" type="button" title="编辑光标所在的表格">✎ 编辑表格</button>
+          <button class="btn sm" id="fmtPasteTable" type="button" title="把剪贴板里的多列文本粘贴成 Markdown 表格">⇥ 粘贴为表格</button>
+          <details class="fmt-select">
+            <summary class="btn sm" id="fmtHeading">H 标题 ▾</summary>
+            <div class="theme-options" role="group" aria-label="标题级别">
+              <button type="button" data-heading="1">H1 一级标题</button>
+              <button type="button" data-heading="2">H2 二级标题</button>
+              <button type="button" data-heading="3">H3 三级标题</button>
+              <button type="button" data-heading="4">H4 四级标题</button>
+              <button type="button" data-heading="5">H5 五级标题</button>
+              <button type="button" data-heading="6">H6 六级标题</button>
+            </div>
+          </details>
+          <button class="btn sm" type="button" data-format="bold" title="粗体（再点一次取消）">B 粗体</button>
+          <button class="btn sm" type="button" data-format="italic">I 斜体</button>
+          <button class="btn sm" type="button" data-format="bullets">• 列表</button>
+          <button class="btn sm" type="button" data-format="ordered">1. 有序</button>
+          <button class="btn sm" type="button" data-format="quote">❝ 引用</button>
+          <button class="btn sm" type="button" data-format="code">&lt;/&gt; 代码</button>
+          <button class="btn sm" type="button" data-format="link">🔗 链接</button>
+        </div>
+        <textarea id="editor" spellcheck="false" placeholder="在这里写 Markdown…"></textarea>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div id="overlay"></div>
+<div id="toasts"></div>
+<div id="dropzone"><div class="dz">松开鼠标即可导入<small>支持 .md / .markdown / .txt，文件夹会保留目录结构；图片会插到当前文档的光标处</small></div></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

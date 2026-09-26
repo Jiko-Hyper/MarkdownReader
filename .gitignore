@@ -1,0 +1,27 @@
+# ---- Python ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- PyInstaller / 打包中间产物 ---------------------------------------
+build/runtime/
+build/launcher/
+build/dl/
+build/release/
+build/release.backup-*/
+build/pyi/
+release/*.zip
+
+# ---- 运行期产生的本地数据 ---------------------------------------------
+.dev-workspace/
+installation.json
+.testtmp/
+*.log
+
+# ---- 编辑器 / 系统 -----------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

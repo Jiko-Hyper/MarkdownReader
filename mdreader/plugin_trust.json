@@ -1,0 +1,24 @@
+{
+  "api_version": "1",
+  "note": "受信插件清单。只有这里的 id、版本与 SHA256 都对得上的包才能安装；清单自称官方或包内自带哈希都不算证据。官方插件的哈希在各自任务交付、打包之后登记。",
+  "plugins": {
+    "mdreader.image-insert": {
+      "publisher": "MDReader",
+      "versions": {
+        "1.0.2": "7730124161031129b460e70fb0678badb245a9a708dcde804860a1521a6c9b25"
+      }
+    },
+    "mdreader.export-pdf": {
+      "publisher": "MDReader",
+      "versions": {
+        "1.0.2": "7d17930d95c75e08d9bbc200bf9cdc7238210c27e6b9fa5f9859a10c9f06008e"
+      }
+    },
+    "mdreader.export-docx": {
+      "publisher": "MDReader",
+      "versions": {
+        "1.0.2": "9e56d969346fceae2df6943cbb3d41352dfc2c7f11c26a4b387f3c861d98d087"
+      }
+    }
+  }
+}
