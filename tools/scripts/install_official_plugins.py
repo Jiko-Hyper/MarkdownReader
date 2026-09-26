@@ -8,11 +8,12 @@ import sys
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from mdreader import core
 
-WANTED = ("mdreader.image-insert", "mdreader.export-pdf", "mdreader.export-docx")
+WANTED = ("mdreader.image-insert", "mdreader.export-pdf", "mdreader.export-docx",
+          "mdreader.document-convert")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--workspace", default=core.default_workspace())

@@ -20,6 +20,109 @@ function bodyOf(name) {
   return source.slice(start, end + EOL.length + 1);
 }
 
+function modelAssistantSetup({failChat = false, document = null} = {}) {
+  const nodes = new Map();
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, {id: id.slice(1), value: '', isConnected: true,
+      checked: false, classList: {add() {}, remove() {}}, focus() {}, dispatchEvent() {}});
+    return nodes.get(id);
+  };
+  const calls = [], inserted = [];
+  const profiles = {deepseek: {label: 'DeepSeek Flash', model: 'deepseek-flash', base_url: 'https://api.deepseek.com', has_key: false, key_url: 'https://platform.deepseek.com/api_keys'}};
+  const settings = {selected: 'deepseek', profiles};
+  const context = vm.createContext({
+    $: node, $$: () => [], esc: value => value, toast() {}, state: {doc: {}},
+    document: {activeElement: {focus() {}}}, navigator: {clipboard: {writeText: async () => {}}},
+    insertMarkdownAtCursor: text => inserted.push(text),
+    switchMode() {}, Event: class Event {},
+    api: async (url, payload) => {
+      calls.push([url, payload]);
+      if (url === '/api/assistant/settings') return settings;
+      if (url === '/api/assistant/chat') {
+        if (failChat) throw Error('余额不足');
+        return {text: '<script>this stays text</script>', note: '', document};
+      }
+      if (url === '/api/assistant/models') return {models: ['deepseek-flash']};
+      return {text: 'OK'};
+    },
+  });
+  vm.runInContext(bodyOf('showModelAssistant'), context);
+  return {context, node, calls, inserted};
+}
+
+test('model assistant sends a prompt without silently attaching the document', async () => {
+  const {context, node, calls, inserted} = modelAssistantSetup();
+  await context.showModelAssistant();
+  node('#modelPrompt').value = '解释代码';
+  node('#editor').value = 'private document';
+  await node('#modelSend').onclick();
+  const sent = calls.find(([url]) => url === '/api/assistant/chat')[1];
+  assert.equal(sent.context, '');
+  assert.equal(sent.messages[0].content, '解释代码');
+  assert.equal(inserted.length, 0);
+  assert.match(node('#modelTranscript').textContent, /<script>/);
+  node('#modelInsert').onclick();
+  assert.equal(inserted.length, 1);
+});
+
+test('model assistant attaches the current editor buffer only when selected', async () => {
+  const {context, node, calls} = modelAssistantSetup();
+  await context.showModelAssistant();
+  node('#modelPrompt').value = '改进文档';
+  node('#modelContext').checked = true;
+  node('#editor').value = '未保存内容';
+  await node('#modelSend').onclick();
+  assert.equal(calls.find(([url]) => url === '/api/assistant/chat')[1].context, '未保存内容');
+});
+
+test('model assistant failure retains the prompt and restores controls', async () => {
+  const {context, node, inserted} = modelAssistantSetup({failChat: true});
+  await context.showModelAssistant();
+  node('#modelPrompt').value = '不要丢失这个问题';
+  await node('#modelSend').onclick();
+  assert.equal(node('#modelPrompt').value, '不要丢失这个问题');
+  assert.equal(node('#modelStatus').textContent, '余额不足');
+  assert.equal(inserted.length, 0);
+});
+
+test('AI document edits require apply, preserve intervening edits, and can be undone', async () => {
+  const {context, node, calls} = modelAssistantSetup({document: '原文\n你好'});
+  await context.showModelAssistant();
+  node('#editor').value = '原文';
+  node('#modelContext').checked = true;
+  node('#modelPrompt').value = '最后一行添加你好';
+  await node('#modelSend').onclick();
+  assert.equal(calls.find(([url]) => url === '/api/assistant/chat')[1].edit, true);
+  assert.equal(node('#editor').value, '原文');
+  assert.equal(node('#modelApply').disabled, false);
+  node('#editor').value = '用户新输入';
+  node('#modelApply').onclick();
+  assert.equal(node('#editor').value, '用户新输入');
+  node('#editor').value = '原文';
+  const originalDoc = context.state.doc;
+  context.state.doc = {};
+  node('#modelApply').onclick();
+  assert.equal(node('#editor').value, '原文');
+  context.state.doc = originalDoc;
+  node('#modelApply').onclick();
+  assert.equal(node('#editor').value, '原文\n你好');
+  node('#modelApply').onclick();
+  assert.equal(node('#editor').value, '原文\n你好');
+  node('#modelUndo').onclick();
+  assert.equal(node('#editor').value, '原文');
+});
+
+test('model assistant clears typed key after save and close', async () => {
+  const {context, node} = modelAssistantSetup();
+  await context.showModelAssistant();
+  node('#modelKey').value = 'sample-secret';
+  await node('#modelSave').onclick();
+  assert.equal(node('#modelKey').value, '');
+  node('#modelKey').value = 'replacement-secret';
+  node('#modelClose').onclick();
+  assert.equal(node('#modelKey').value, '');
+});
+
 function setup() {
   const editor = { value: 'unsaved' };
   const state = { pid: 'project', active: 'old.md', dirty: true, doc: { raw: 'old' } };

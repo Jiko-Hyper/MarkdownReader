@@ -123,31 +123,26 @@ class DocumentActions:
         self.draw_tabs(); self.refresh_recent()
         return True
 
+    def toggle_find(self):
+        current = getattr(self, '_find_dialog', None)
+        if current is not None and not current.closed:
+            current.close()
+            # Destroying a native toplevel can leave Windows focus nowhere;
+            # activate the owner so the next shortcut needs no extra click.
+            self.root.lift()
+            self.text.focus_force()
+            return
+        self.find_in_document()
+
     def find_in_document(self):
-        tk = self._tk
-        dialog = tk.Toplevel(self.root); dialog.title('文档内查找')
-        dialog.transient(self.root); dialog.configure(bg=self.pal['bg'])
-        query = tk.StringVar(); entry = tk.Entry(dialog, textvariable=query, bg=self.pal['bg'], fg=self.pal['fg'])
-        entry.pack(fill='x', padx=12, pady=12)
-        status = tk.Label(dialog, bg=self.pal['bg'], fg=self.pal['fg']); status.pack()
-        position = ['1.0']
-        def find(back=False):
-            self.text.tag_remove('find_hit', '1.0','end')
-            needle = query.get()
-            if not needle: return
-            start = self.text.index(position[0]+'-1c') if back else position[0]
-            hit = self.text.search(needle, start, stopindex='1.0' if back else 'end', backwards=back, nocase=True)
-            if not hit: hit = self.text.search(needle, 'end' if back else '1.0', backwards=back, nocase=True)
-            if not hit: status.configure(text='无匹配结果'); return
-            end = self.text.index('%s+%dc' % (hit,len(needle)))
-            self.text.tag_configure('find_hit', background=self.pal['sel'], foreground=self.pal['fg'])
-            self.text.tag_add('find_hit', hit, end); self.text.see(hit)
-            position[0] = hit if back else end; status.configure(text='位置 '+hit)
-        for label, backwards in [('上一处',True),('下一处',False)]:
-            tk.Button(dialog,text=label,command=lambda b=backwards:find(b)).pack(side='left',padx=12,pady=12)
-        entry.bind('<Return>',lambda _e:find()); entry.focus_set()
-        def close(): self.text.tag_remove('find_hit','1.0','end'); dialog.destroy()
-        dialog.protocol('WM_DELETE_WINDOW',close); dialog.bind('<Escape>',lambda _e:close())
+        current = getattr(self, '_find_dialog', None)
+        if current is not None and not current.closed:
+            if current.text is self.text and current.tab is self.active_tab:
+                current.focus_query()
+                return
+            current.close()
+        from .find_ui import FindDialog
+        self._find_dialog = FindDialog(self)
 
     def show_outline(self):
         tk = self._tk; dialog=tk.Toplevel(self.root); dialog.title('标题导航')
@@ -172,7 +167,7 @@ class DocumentActions:
 
     def save_reading_positions(self):
         self.stash_tab()
-        positions={self.recovery_identity(t):t.get('scroll',0) for t in self.tabs}
+        positions={self.recovery_identity(t): t.get('views', {}) for t in self.tabs}
         path=os.path.join(self.ws.root,'reading-positions.json')
         try:
             try:
@@ -185,6 +180,12 @@ class DocumentActions:
         if not self.active_tab:return
         try:
             with open(os.path.join(self.ws.root,'reading-positions.json'),encoding='utf-8') as stream: positions=json.load(stream)
-            value=float(positions.get(self.recovery_identity(self.active_tab),0))
+            saved = positions.get(self.recovery_identity(self.active_tab), 0)
+            if isinstance(saved, dict):
+                self.active_tab['views'] = saved
+                self.restore_view_position()
+                return
+            # Read position files written by earlier versions as well.
+            value=float(saved)
             self.root.update_idletasks(); self.text.yview_moveto(max(0,min(1,value)))
         except (OSError,ValueError,TypeError): pass

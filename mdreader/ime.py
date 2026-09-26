@@ -247,7 +247,10 @@ class CompositionSurface:
         # added keeps the preedit on the same baseline and at the same x as the
         # caret instead of one padding-step down and to the right.
         self.canvas.place(x=self.editor.winfo_x() + x, y=self.editor.winfo_y() + y,
-                          width=width, height=height)
+                          width=width, height=height, bordermode="ignore")
+        # winfo_x/y already include the parent's padding. The default 'inside'
+        # place mode adds Frame padx/pady again (notably in the search dialog),
+        # shifting the preedit down and right, outside the entry's border.
         # Canvas.lift is an item operation; use the Tk window stacking command.
         self.canvas.tk.call("raise", str(self.canvas))
         return x, y, width, height

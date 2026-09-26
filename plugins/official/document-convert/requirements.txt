@@ -1,0 +1,10 @@
+pypdf==6.19.0
+mammoth==1.12.2
+markdownify==1.2.3
+markdown-it-py==4.2.0
+beautifulsoup4==4.15.0
+cobble==0.1.4
+mdurl==0.1.2
+six==1.17.0
+soupsieve==2.10
+typing_extensions==4.16.0

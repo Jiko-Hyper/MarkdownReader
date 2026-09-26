@@ -55,6 +55,16 @@ For command-line installation:
 - If Windows blocks downloaded files, verify the source first. If an **Unblock** option is available in the ZIP's Properties dialog, use it and extract again.
 - The application is unsigned, so Windows may show a security warning. Do not disable antivirus or other system protections.
 
+## What's new in 0.4.0 and how to use it
+
+- **AI chat and document edits:** click **AI 接入** (AI connection) in the toolbar. Choose GPT, Claude, or DeepSeek, enter your provider API key, then click **保存并获取模型** (Save and fetch models) and **测试连接** (Test connection). Send with **发送** or `Ctrl+Enter`. Model availability depends on your provider account; custom model IDs and compatible endpoints are supported. Connection tests and chat require internet access and may incur provider API charges.
+- **Apply an AI edit:** **附上当前文档** (Attach current document) is off by default. Enable it to send the current buffer, including unsaved text, along with your request. Review the proposed change and click **应用修改** (Apply changes); save separately with `Ctrl+S`. Desktop users can undo in the source editor with `Ctrl+Z`; the browser assistant has **撤销此次修改** (Undo this change). If the document changes while waiting, stale edits are rejected. Ordinary replies can be copied or inserted at the cursor. Keys are stored using Windows account encryption; chat history is only kept in the current assistant window. See [AI model guide (Chinese)](docs/AI_MODELS.md).
+- **External AI control:** open **更多 → 外部 AI 控制接口（高级）** (More → External AI control interface), enable the local service, and copy its connection details into an assistant that supports local HTTP tools. Enable write access separately to create, save, or replace document text. This local key is separate from provider API keys. See [API guide (Chinese)](docs/AI_API.md).
+- **Offline format conversion:** in **更多 → 插件管理** (More → Plugin manager), install and enable the bundled `mdreader.document-convert-1.0.0.zip`. Open **更多 → 文档格式转换** (More → Document conversion), choose PDF/DOCX → Markdown or Markdown ↔ HTML, select the source file and a new destination. Save edits first: conversion reads the disk file, preserves the source, and refuses to overwrite an existing output. Scanned PDFs have no OCR support; retain generated image folders alongside Markdown output. This feature currently has a desktop menu only and requires host version 0.4.0 or later. See [conversion guide (Chinese)](plugins/official/document-convert/README.md).
+- **Find and navigation:** `Ctrl+F` opens a themed, draggable search panel. Typing counts and highlights all matches. First/previous/next/last controls navigate matches, with previous/next wrapping around. Press `Ctrl+F` again, Esc, or click outside to close. Select text in the desktop document and press `Ctrl+M` to switch between preview and source at the matching text. Without a selection, each view restores its own position, remembered per document across normal restarts. `Ctrl+Home` / `Ctrl+End` move to the beginning/end.
+
+**Upgrade from 0.3.0:** save your documents, close the application, download `MarkdownReader-0.4.0-win64.zip` from this release, extract it fully, and run the installer using the existing application and data folders. Install and enable the new conversion plugin in Plugin manager. Updating only the plugin ZIP does not update an older host.
+
 ## Features
 
 - **Reading:** light, dark, and warm reading themes; adjustable font size; heading navigation; in-document search; tables and code blocks.
@@ -168,6 +178,6 @@ MDReader is released under the [MIT License](LICENSE). The bundled Python runtim
 
 ## A note from the developer
 
-I'm a university student building MDReader as a personal, non-commercial hobby project. It is still evolving, and some areas need more polish. Multilingual support and API integration are among the ideas for future development.
+I'm a university student building MDReader as a personal, non-commercial hobby project. It is still evolving, and some areas need more polish. AI API integration is now available; multilingual support and further usability improvements are planned.
 
 Bug reports, suggestions, and new plugins are welcome. Please use the repository's Issues to share feedback and help improve the project.

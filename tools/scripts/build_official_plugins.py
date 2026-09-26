@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from mdreader.plugins import build_package
 
@@ -52,3 +52,5 @@ for kind, name in names.items():
     trust["plugins"][pid] = {"publisher": "MDReader", "versions": {VERSION: digest}}
     print(target.name, target.stat().st_size, digest)
 trust_path.write_text(json.dumps(trust, ensure_ascii=False, indent=2), encoding="utf-8")
+import runpy
+runpy.run_path(str(Path(__file__).with_name("build_conversion_plugin.py")), run_name="__main__")

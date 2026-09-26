@@ -41,6 +41,7 @@ class UiWiringTests(unittest.TestCase):
         # ids the script creates at runtime on its own markup
         dynamic = {"welcomeOpen", "emptyNew", "emptyImport", "mf_",
                    "tblCols", "tblRows", "tblHeader", "pasteHeader"}
+        dynamic |= set(re.findall(r'id="([A-Za-z0-9_-]+)"', self.js))
         missing = sorted(queried - self.html_ids - dynamic)
         self.assertEqual(missing, [], "脚本查询了页面上不存在的元素：%s" % missing)
 
@@ -106,8 +107,11 @@ class UiWiringTests(unittest.TestCase):
         self.assertIn('"/api/plugins/insert"', self.core, "缺少图片插入接口")
 
     def test_every_api_call_has_a_server_route(self):
-        called = set(re.findall(r"""['"](/api/[A-Za-z0-9_/]+)""", self.js))
-        routes = set(re.findall(r"""path == ['"](/api/[A-Za-z0-9_/]+)['"]""", self.core))
+        called = set(re.findall(r"""['"](/api/[A-Za-z0-9_/-]+)""", self.js))
+        routes = set(re.findall(r"""path == ['"](/api/[A-Za-z0-9_/-]+)['"]""", self.core))
+        from mdreader.ai_api import PREFIX
+        ai_source = _read(os.path.join(HERE, 'mdreader', 'ai_api.py'))
+        routes |= {PREFIX + suffix for suffix in re.findall(r'path != PREFIX \+ "([^"]+)"', ai_source)}
         unknown = sorted(called - routes)
         self.assertEqual(unknown, [], "前端调用了服务端没有的接口：%s" % unknown)
 

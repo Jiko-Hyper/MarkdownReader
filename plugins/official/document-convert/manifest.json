@@ -1,0 +1,52 @@
+{
+  "id": "mdreader.document-convert",
+  "name": "文档格式转换",
+  "version": "1.0.0",
+  "api_version": "1",
+  "app_version_range": ">=0.4.0",
+  "entrypoint": "plugin.py",
+  "capabilities": [
+    "file.convert"
+  ],
+  "dependencies": [],
+  "publisher": "MDReader",
+  "description": "离线 PDF / Word 转 Markdown、Markdown 与 HTML 互转（需要新版宿主）。",
+  "commands": [
+    {
+      "id": "pdf-md",
+      "title": "PDF 转 Markdown",
+      "method": "pdf_to_md",
+      "capability": "file.convert",
+      "format": "pdf-md",
+      "extension": "md",
+      "media_type": "text/markdown"
+    },
+    {
+      "id": "docx-md",
+      "title": "Word 转 Markdown（DOCX）",
+      "method": "word_to_md",
+      "capability": "file.convert",
+      "format": "docx-md",
+      "extension": "md",
+      "media_type": "text/markdown"
+    },
+    {
+      "id": "md-html",
+      "title": "Markdown 转 HTML",
+      "method": "md_to_html",
+      "capability": "file.convert",
+      "format": "md-html",
+      "extension": "html",
+      "media_type": "text/html"
+    },
+    {
+      "id": "html-md",
+      "title": "HTML 转 Markdown",
+      "method": "html_to_md",
+      "capability": "file.convert",
+      "format": "html-md",
+      "extension": "md",
+      "media_type": "text/markdown"
+    }
+  ]
+}

@@ -19,6 +19,12 @@
       "versions": {
         "1.0.2": "9e56d969346fceae2df6943cbb3d41352dfc2c7f11c26a4b387f3c861d98d087"
       }
+    },
+    "mdreader.document-convert": {
+      "publisher": "MDReader",
+      "versions": {
+        "1.0.0": "052e9a372a48de5a8514c5c22bb1f952f75c7baa4417ce0498f7e5e2fffc225a"
+      }
     }
   }
 }

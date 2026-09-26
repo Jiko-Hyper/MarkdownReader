@@ -1,11 +1,14 @@
 # plugins — 官方离线插件
 
 MDReader 的核心功能（读写、撤销、表格、主题、公式阅读、HTML 导出）不依赖任何插件。
-**导出 Word/PDF** 与 **图片插入** 由这里的三个官方插件提供，它们全部离线运行。
+**导出 Word/PDF**、**图片插入** 与 **文档格式转换** 由这里的四个官方插件提供，全部离线运行。
+
+新增 `mdreader.document-convert-1.0.0.zip`：PDF / Word DOCX 转 Markdown，Markdown 与 HTML 互转。
+更新宿主后，在桌面「更多 → 文档格式转换」使用，[安装与边界说明](official/document-convert/README.md)。
 
 | 目录 | 是什么 |
 | --- | --- |
-| `official/` | 三个插件的源码（`manifest.json` + `plugin.py` + 公共的 `common/exporting.py`） |
+| `official/` | 四个插件的源码（`manifest.json` + `plugin.py`，导出插件共用 `common/exporting.py`） |
 | `packages/` | 可直接安装的插件包 `*.zip`，SHA256 登记在 `mdreader/plugin_trust.json` |
 | `dependencies/` | 插件运行需要的第三方库（Pillow / markdown-it-py / python-docx / lxml / reportlab），源码运行时用 |
 | `samples/` | 插件开发样例，用来演示清单字段与能力接口 |
@@ -24,7 +27,7 @@ MDReader 的核心功能（读写、撤销、表格、主题、公式阅读、HT
 
 ```powershell
 python tools/scripts/build_plugin.py <插件源码目录> -o <输出目录>
-python tools/scripts/build_official_plugins.py    # 重新生成三个官方插件包
+python tools/scripts/build_official_plugins.py    # 重新生成四个官方插件包，转换依赖准备方式见上面的说明
 ```
 
 打包是确定性的（成员按名字排序、时间戳固定），因此同一份源码总是得到同一个 SHA256；

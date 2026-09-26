@@ -378,6 +378,13 @@ class TaskManager:
             return P.check_image_plan(task.result, task.workdir)
         if task.capability == P.CAP_EXPORT:
             return P.check_export_artifact(task.result, task.workdir, command)
+        if task.capability == P.CAP_CONVERT:
+            checked = P.check_export_artifact(task.result, task.workdir, command)
+            assets = task.result.get("assets") or []
+            if not isinstance(assets, list) or len(assets) > 500:
+                raise P.TaskError("转换附件数量无效或超过 500 张")
+            checked["assets"] = [P.check_image_asset(path, task.workdir) for path in assets]
+            return checked
         raise P.TaskError("不支持的能力：%s" % task.capability)
 
     # -- 查询 -------------------------------------------------------------

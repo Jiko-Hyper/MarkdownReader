@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+plugins/conversion-dependencies/
 .venv/
 venv/
 
@@ -17,6 +18,8 @@ release/*.zip
 # ---- 运行期产生的本地数据 ---------------------------------------------
 .dev-workspace/
 installation.json
+ai-connection.json
+ai-providers.json
 .testtmp/
 *.log
 

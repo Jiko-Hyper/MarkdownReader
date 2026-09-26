@@ -744,11 +744,11 @@ def official_plugin_section(win, root: Path):
     维护者试用后反馈「转换时会出现乱码」，根因是基础字体缺字形时 ReportLab 会画一个空的
     .notdef。这里把「导出稿里这些字符真的还在」固定成验收行。
     """
-    section("【正式插件】三个发布包的安装、导出与字形覆盖")
+    section("【正式插件】四个发布包的安装、导出与字形覆盖")
     packages = sorted((ROOT / "plugins" / "packages").glob("*.zip"))
-    if len(packages) != 3:
-        skip("正式插件", "三个发布包齐全并可从受信清单安装",
-             "plugins/packages 下应有三个包，实际找到 %d 个" % len(packages))
+    if len(packages) != 4:
+        skip("正式插件", "四个发布包齐全并可从受信清单安装",
+             "plugins/packages 下应有四个包，实际找到 %d 个" % len(packages))
         return
     workspace = core.Workspace(str(root / "正式插件工作区"))
     api = core.Api(workspace, str(WEBUI))
@@ -759,8 +759,8 @@ def official_plugin_section(win, root: Path):
             installed = workspace.plugins.install(str(package))
             verified.append(installed["verified"])
             ids.append(manifest["id"])
-        check("正式插件", "三个发布包都在受信清单里，安装来源已核对",
-              len(verified) == 3 and all(verified) and len(set(ids)) == 3, ", ".join(ids))
+        check("正式插件", "四个发布包都在受信清单里，安装来源已核对",
+              len(verified) == 4 and all(verified) and len(set(ids)) == 4, ", ".join(ids))
         enabled = [workspace.plugins.enable(pid) for pid in ids]
         extensions = {c.get("extension") for c in workspace.plugins.commands()}
         check("正式插件", "启用后 PDF 与 Word 导出命令都注册出来",
@@ -1522,8 +1522,8 @@ def export_service_section(win, root: Path):
     """F06：统一导出服务——来源选择、预检、覆盖确认与快照语义（用正式插件跑真导出）。"""
     section("【导出】统一快照、预检与覆盖保护（F06）")
     packages = sorted((ROOT / "plugins" / "packages").glob("*.zip"))
-    if len(packages) != 3:
-        skip("导出", "预检与导出流程", "plugins/packages 下应有三个包，实际 %d 个" % len(packages))
+    if len(packages) != 4:
+        skip("导出", "预检与导出流程", "plugins/packages 下应有四个包，实际 %d 个" % len(packages))
         return
     workspace = core.Workspace(str(root / "导出工作区"))
     try:

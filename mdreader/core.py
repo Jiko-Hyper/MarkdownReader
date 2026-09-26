@@ -37,7 +37,7 @@ from . import tables as TB
 from .storage import atomic_write, is_within, safe_join
 
 APP_NAME = "MDReader"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 WS_DIRNAME = ".mdreader"
 PROJECT_FILE = "project.json"
 DOC_EXTS = (".md", ".markdown", ".mdown", ".mkd", ".txt")
@@ -377,7 +377,8 @@ class Workspace:
         except OSError: pass  # the document commit already succeeded
         return self.doc_info(pdir, did)
 
-    def create_doc(self, pdir: str, name: str, subdir: str = "", content: str = "") -> dict:
+    def create_doc(self, pdir: str, name: str, subdir: str = "", content: str = "",
+                   *, use_template: bool = True) -> dict:
         base = slugify(name, "Untitled")
         if not base.lower().endswith(DOC_EXTS):
             base += ".md"
@@ -385,7 +386,7 @@ class Workspace:
         os.makedirs(target_dir, exist_ok=True)
         stem, ext = os.path.splitext(base)
         full = os.path.join(target_dir, base)
-        body = content if content else "# %s\n\n> 创建于 %s\n\n在这里开始记录。\n" % (
+        body = content if content or not use_template else "# %s\n\n> 创建于 %s\n\n在这里开始记录。\n" % (
             os.path.splitext(os.path.basename(full))[0], now_iso())
         # 独占创建 + 顺延编号：树的显示顺序可能与磁盘不同，只靠一次 listdir
         # 判断“重名”会漏掉刚被别人建好的文件，这里以真正创建的动作为准
@@ -394,7 +395,7 @@ class Workspace:
                 F.create_exclusive(full, body)
             except FileExistsError:
                 full = os.path.join(target_dir, "%s-%d%s" % (stem, n, ext))
-                body = content if content else "# %s\n\n> 创建于 %s\n\n在这里开始记录。\n" % (
+                body = content if content or not use_template else "# %s\n\n> 创建于 %s\n\n在这里开始记录。\n" % (
                     os.path.splitext(os.path.basename(full))[0], now_iso())
                 continue
             break
@@ -1244,10 +1245,23 @@ class Api:
         self.token = secrets.token_urlsafe(32)
         self.mode = 'server'
         self.selected_paths = set()
+        self.ai = None
+        self.ai_lock = threading.RLock()
+        self.ai_base_url = ''
+        self.ai_settings_error = ''
+        from .ai_connection import restore
+        restore(self)
+        from .ai_providers import ProviderStore
+        self.providers = ProviderStore(ws.root)
 
     # -- dispatch --------------------------------------------------------
     def get(self, path: str, q: dict):
         ws = self.ws
+        if path == '/api/assistant/settings':
+            return self.providers.settings()
+        if path == '/api/ai-connection':
+            from .ai_connection import status
+            return status(self)
         if path in ("/", "/index.html"):
             with open(os.path.join(self.webui,'index.html'),encoding='utf-8') as stream: page=stream.read()
             page=page.replace('<head>', '<head><meta name="mdreader-session" content="'+self.token+'">')
@@ -1825,6 +1839,19 @@ class Api:
 
     def post(self, path: str, payload: dict):
         ws = self.ws
+        if path.startswith('/api/assistant/') and not isinstance(payload, dict):
+            raise ValueError('无效模型请求')
+        if path == '/api/assistant/settings':
+            return self.providers.save(payload)
+        if path == '/api/assistant/models':
+            return self.providers.models(payload.get('provider'))
+        if path == '/api/assistant/test':
+            return self.providers.chat(payload, test=True)
+        if path == '/api/assistant/chat':
+            return self.providers.chat(payload)
+        if path == '/api/ai-connection':
+            from .ai_connection import configure
+            return configure(self, payload)
         act = payload.get("action") or path.rsplit("/", 1)[-1]
         if path.startswith('/api/loose/') and payload.get('doc'):
             self.loose.require_opened(payload['doc'])
@@ -2237,6 +2264,9 @@ class Handler(BaseHTTPRequestHandler):
             self._error(500, "%s: %s" % (type(e).__name__, e))
 
     def do_GET(self):
+        if self._query()[0].startswith('/api/ai/'):
+            self._ai_request()
+            return
         if not self._authorize(): return
         path, q = self._query()
         self._guard(lambda: self.api.get(path, q))
@@ -2245,6 +2275,9 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_POST(self):
+        if self._query()[0].startswith('/api/ai/'):
+            self._ai_request(write=True)
+            return
         if not self._authorize(write=True): return
         path, _ = self._query()
 
@@ -2254,6 +2287,20 @@ class Handler(BaseHTTPRequestHandler):
 
         self._guard(run)
 
+    def _ai_request(self, write=False):
+        # A switch-off or key reset waits for the current call, then immediately
+        # invalidates old credentials for all following calls.
+        with self.api.ai_lock:
+            if not self._authorize(write=write): return
+            path, _ = self._query()
+            def run():
+                if not write:
+                    return self.api.ai.get(path)
+                if path != '/api/ai/v1/tools/call':
+                    raise KeyError('未知 AI 接口')
+                return self.api.ai.call(self._read_payload())
+            self._guard(run)
+
     def _authorize(self, write=False):
         from http.cookies import SimpleCookie
         host='127.0.0.1:%d'%self.server.server_address[1]
@@ -2262,7 +2309,15 @@ class Handler(BaseHTTPRequestHandler):
         origin=self.headers.get('Origin')
         if origin and origin not in ('http://'+host,'http://'+host.replace('127.0.0.1','localhost')):
             self._error(403,'来源已拒绝');return False
-        if self.path.startswith('/api/'):
+        path, _ = self._query()
+        if path.startswith('/api/ai/'):
+            if self.api.ai is None:
+                self._error(404, 'AI 接口未启用'); return False
+            authorization = self.headers.get('Authorization', '')
+            expected = 'Bearer ' + self.api.ai.token
+            if not secrets.compare_digest(authorization.encode('utf-8'), expected.encode('utf-8')):
+                self._error(403, 'AI 接口密钥无效'); return False
+        elif path.startswith('/api/'):
             token=self.headers.get('X-MDReader-Session','')
             if not write and not token:
                 cookie=SimpleCookie(self.headers.get('Cookie',''))
@@ -2283,15 +2338,20 @@ def free_port(preferred: int = 0) -> int:
         return s.getsockname()[1]
 
 
-def serve(workspace_root: str | None = None, port: int = 0, quiet: bool = False):
+def serve(workspace_root: str | None = None, port: int = 0, quiet: bool = False,
+          *, ai_token=None, ai_writable=False):
     ws = Workspace(workspace_root or default_workspace())
     api = Api(ws, os.path.join(app_dir(), "webui"))
+    if ai_token is not None:
+        from .ai_api import AiApi
+        api.ai = AiApi(ws, ai_token, ai_writable)
     if not os.path.isdir(api.webui):
         raise RuntimeError("找不到界面资源目录：%s" % api.webui)
     # Each server owns its API; a second window must not redirect the first.
     bound_handler = type("WorkspaceHandler", (Handler,), {"api": api})
     httpd = ThreadingHTTPServer(("127.0.0.1", port), bound_handler)
     httpd.daemon_threads = True
+    api.ai_base_url = 'http://127.0.0.1:%d' % httpd.server_address[1]
     return ws, httpd, httpd.server_address[1]
 
 

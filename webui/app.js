@@ -1448,6 +1448,267 @@ function pluginListHtml(rows) {
     '<div class="tree-empty">还没有安装任何插件</div>';
 }
 
+async function showModelAssistant() {
+  let settings;
+  try { settings = await api('/api/assistant/settings'); }
+  catch (e) { toast(e.message, 'err'); return; }
+  const ov = $('#overlay');
+  const previous = document.activeElement;
+  ov.innerHTML = '<div class="modal model-assistant" role="dialog" aria-modal="true" aria-labelledby="modelTitle">' +
+    '<h3 id="modelTitle">AI 接入与助手</h3><p class="hint">选择 GPT、Claude 或 DeepSeek，粘贴 API Key 后即可对话。</p>' +
+    '<div class="field"><label for="modelProvider">服务商</label><select id="modelProvider">' +
+    Object.entries(settings.profiles).map(([name, p]) => '<option value="' + esc(name) + '">' + esc(p.label) + '</option>').join('') + '</select></div>' +
+    '<div class="field"><label for="modelName">模型（不限制版本，可直接输入模型 ID）</label><div class="ai-copy-row"><input id="modelName" list="modelChoices"><datalist id="modelChoices"></datalist><button class="btn" id="modelFetch">获取账户模型</button></div></div>' +
+    '<div class="field"><label for="modelKey">API Key</label><div class="ai-copy-row"><input type="password" id="modelKey" autocomplete="off" placeholder="粘贴 API Key；已保存时留空保留"><a id="modelKeyLink" target="_blank" rel="noopener noreferrer">获取密钥</a></div><small id="modelKeyHint"></small></div>' +
+    '<details><summary>接口地址与格式（默认自动）</summary><input id="modelBase" aria-label="接口基础地址"><select id="modelProtocol" aria-label="接口格式"><option value="auto">自动（推荐）</option><option value="responses">Responses</option><option value="chat">Chat Completions（兼容接口）</option><option value="messages">Claude Messages</option></select></details>' +
+    '<div class="ai-copy-row" style="margin:12px 0"><button class="btn primary" id="modelSave">保存并获取模型</button><button class="btn" id="modelTest">测试连接</button><button class="btn" id="modelClearKey">清除密钥</button></div>' +
+    '<p id="modelStatus" class="hint" role="status">测试连接会发送简短请求，按服务商 API 规则计费。</p>' +
+    '<pre id="modelTranscript" aria-label="对话记录"></pre>' +
+    '<label class="ai-toggle"><input type="checkbox" id="modelContext">附上当前文档给 AI（含未保存内容）；修改需点击应用</label>' +
+    '<label for="modelPrompt">在这里输入问题（上方是对话记录）</label><textarea id="modelPrompt" rows="3" aria-label="问题" placeholder="例如：帮我分析需求、解释代码或改进这篇文档…"></textarea>' +
+    '<div class="actions"><button class="btn primary" id="modelSend">发送</button><button class="btn" id="modelNew">新对话</button><button class="btn" id="modelCopy">复制回复</button><button class="btn" id="modelInsert">插入回复文本</button><button class="btn primary" id="modelApply">应用修改</button><button class="btn" id="modelUndo">撤销此次修改</button><button class="btn" id="modelClose">关闭</button></div></div>';
+  ov.classList.add('on');
+  const panel = $('.model-assistant', ov);
+  const el = id => $('#' + id, panel);
+  const histories = {}, replies = {};
+  const feedback = {};
+  const proposals = {};
+  let undo = null;
+  let busy = false, closed = false;
+  const current = () => el('modelProvider').value;
+  const alive = () => !closed && panel.isConnected;
+  const status = text => { if (alive()) el('modelStatus').textContent = text; };
+  const paint = () => {
+    el('modelTranscript').textContent = (histories[current()] || []).map(m => (m.role === 'user' ? '你：' : 'AI：') + '\n' + m.content).join('\n\n') || '可以让我解释代码、整理需求、编写开发计划。只有勾选下方选项才会发送当前文档。';
+    if (feedback[current()]) el('modelTranscript').textContent += '\n\n' + feedback[current()];
+    el('modelTranscript').scrollTop = el('modelTranscript').scrollHeight;
+    el('modelApply').disabled = busy || !proposals[current()];
+    el('modelUndo').disabled = busy || !undo;
+    el('modelInsert').disabled = busy || !!proposals[current()];
+  };
+  const select = () => {
+    const p = settings.profiles[current()];
+    el('modelName').value = p.model; el('modelBase').value = p.base_url; el('modelKey').value = '';
+    el('modelProtocol').value = p.protocol || 'auto';
+    el('modelKeyLink').href = p.key_url;
+    el('modelKeyHint').textContent = p.has_key ? '密钥已在本机加密保存；留空保留。' : '尚未设置密钥。';
+    el('modelChoices').innerHTML = (p.models || []).map(m => '<option value="' + esc(m) + '"></option>').join('');
+    el('modelContext').checked = false; paint();
+  };
+  const save = async () => {
+    settings = await api('/api/assistant/settings', {provider: current(), model: el('modelName').value,
+      base_url: el('modelBase').value, api_key: el('modelKey').value, protocol: el('modelProtocol').value});
+    if (alive()) { el('modelKey').value = ''; el('modelKeyHint').textContent = settings.profiles[current()].has_key ? '密钥已在本机加密保存；留空保留。' : '尚未设置密钥。'; }
+  };
+  const run = async fn => {
+    if (busy) return;
+    busy = true; $$('button, input, select, textarea', panel).forEach(e => {if (e.id !== 'modelClose') e.disabled = true;});
+    status('正在处理，请稍候…');
+    try { await fn(); } catch (e) {
+      status(e.message);
+      if (alive()) {feedback[current()] = '操作失败：' + e.message + '\n问题已保留，可修改设置后重新发送。'; paint();}
+    }
+    finally { busy = false; if (alive()) {$$('button, input, select, textarea', panel).forEach(e => e.disabled = false); paint();} }
+  };
+  el('modelProvider').value = settings.selected; select();
+  el('modelProvider').onchange = () => {
+    select();
+    const p = settings.profiles[current()];
+    if (p.has_key && !(p.models || []).length) el('modelFetch').onclick();
+  };
+  el('modelSave').onclick = () => el('modelFetch').onclick();
+  el('modelClearKey').onclick = () => run(async () => {
+    settings = await api('/api/assistant/settings', {provider: current(), clear_key: true});
+    if (alive()) select(); status('密钥已清除');
+  });
+  el('modelFetch').onclick = () => run(async () => {
+    await save();
+    const result = await api('/api/assistant/models', {provider: current()});
+    if (!alive()) return;
+    settings.profiles[current()].models = result.models;
+    el('modelChoices').innerHTML = result.models.map(m => '<option value="' + esc(m) + '"></option>').join('');
+    if (!el('modelName').value && result.models.length) el('modelName').value = result.models[0];
+    status('已获取 ' + result.models.length + ' 个模型，可在模型栏选择或输入。');
+  });
+  el('modelTest').onclick = () => run(async () => {
+    await save();
+    const result = await api('/api/assistant/test', {provider: current()});
+    status('连接成功，模型已回复：' + result.text.slice(0, 80));
+  });
+  el('modelSend').onclick = () => run(async () => {
+    const text = el('modelPrompt').value.trim();
+    if (!text) throw new Error('请输入问题');
+    const name = current();
+    const messages = (histories[name] || []).concat([{role: 'user', content: text}]);
+    let context = '';
+    let snapshot = null;
+    if (el('modelContext').checked) {
+      if (!state.doc) throw new Error('请先打开文档或取消附上文档');
+      context = $('#editor').value;
+      snapshot = {doc: state.doc, text: context};
+    }
+    proposals[name] = null;
+    await save();
+    feedback[name] = '你（等待回复）：\n' + text + '\n\n正在等待模型回复…'; paint();
+    const result = await api('/api/assistant/chat', {provider: name, messages, context, edit: !!snapshot});
+    if (!alive()) return;
+    histories[name] = messages.concat([{role: 'assistant', content: result.text}]);
+    replies[name] = result.text; feedback[name] = ''; el('modelPrompt').value = ''; paint();
+    if (snapshot && typeof result.document === 'string' && result.document !== context) {
+      proposals[name] = {...snapshot, document: result.document};
+      feedback[name] = '待应用的完整文档（点击「应用修改」后才会写入编辑器）：\n' + result.document;
+      paint();
+    }
+    status(proposals[name] ? '请查看修改后的正文，再点击「应用修改」。' : result.note || '回复完成。');
+  });
+  el('modelPrompt').onkeydown = e => { if (e.ctrlKey && e.key === 'Enter') {e.preventDefault(); el('modelSend').click();} };
+  el('modelNew').onclick = () => {histories[current()] = []; replies[current()] = ''; feedback[current()] = ''; proposals[current()] = null; paint();};
+  const replace = text => {
+    switchMode('source');
+    const editor = $('#editor');
+    editor.value = text;
+    editor.dispatchEvent(new Event('input', {bubbles: true}));
+  };
+  el('modelApply').onclick = () => {
+    const proposal = proposals[current()];
+    if (busy || !proposal) return;
+    if (state.doc !== proposal.doc || $('#editor').value !== proposal.text) {
+      status('文档已切换或发生变化，请回到原文档或重新生成修改。'); return;
+    }
+    replace(proposal.document);
+    undo = proposal; proposals[current()] = null;
+    feedback[current()] = '修改已应用到源码；可撤销此次修改，保存后写入文件。';
+    paint(); status(feedback[current()]);
+  };
+  el('modelUndo').onclick = () => {
+    if (busy || !undo) return;
+    if (state.doc !== undo.doc || $('#editor').value !== undo.document) {
+      status('文档已切换或继续编辑，无法撤销此次修改以免覆盖新内容。'); return;
+    }
+    replace(undo.text); undo = null; paint(); status('已撤销此次 AI 修改。');
+  };
+  el('modelCopy').onclick = async () => {
+    if (!replies[current()]) return;
+    try {await navigator.clipboard.writeText(replies[current()]); status('回复已复制');}
+    catch (_) {const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents(el('modelTranscript')); selection.removeAllRanges(); selection.addRange(range); status('已选中对话，请按 Ctrl+C 复制。');}
+  };
+  el('modelInsert').onclick = () => {
+    if (!state.doc) {status('请先打开或新建文档'); return;}
+    if (replies[current()]) {insertMarkdownAtCursor(replies[current()]); status('已插入当前文档，保存后写入文件。');}
+  };
+  el('modelClose').onclick = () => {closed = true; el('modelKey').value = ''; ov.innerHTML = ''; ov.classList.remove('on'); previous?.focus();};
+  if (settings.profiles[current()].has_key && !(settings.profiles[current()].models || []).length) el('modelFetch').onclick();
+}
+
+async function showAiConnection() {
+  let current;
+  try { current = await api('/api/ai-connection'); }
+  catch (e) { toast(e.message, 'err', '无法打开 AI 接入'); return; }
+  const ov = $('#overlay');
+  const previousFocus = document.activeElement;
+  ov.innerHTML = '<div class="modal ai-connection" role="dialog" aria-modal="true" aria-labelledby="aiTitle">' +
+    '<h3 id="aiTitle">连接 AI，协助处理项目文档</h3>' +
+    '<p class="hint">1. 开启接入 → 2. 复制接入信息 → 3. 粘贴到本机 AI 助手</p>' +
+    '<label class="ai-toggle"><input id="aiEnabled" type="checkbox"> 开启 AI 接入</label>' +
+    '<label class="ai-toggle"><input id="aiWritable" type="checkbox"> 允许 AI 修改文档（关闭时只能查看）</label>' +
+    '<p id="aiStatus" role="status"></p>' +
+    '<div class="field"><label class="lb" for="aiAddress">连接地址</label><div class="ai-copy-row">' +
+    '<input id="aiAddress" readonly><button class="btn" id="aiCopyAddress">复制</button></div></div>' +
+    '<div class="field"><label class="lb" for="aiKey">接入密钥</label><div class="ai-copy-row">' +
+    '<input id="aiKey" type="password" readonly autocomplete="off"><button class="btn" id="aiCopyKey">复制</button></div></div>' +
+    '<div class="ai-copy-row"><button class="btn primary" id="aiCopyAll">复制接入信息</button>' +
+    '<button class="btn" id="aiTest">检测连接</button><button class="btn" id="aiReset">更换密钥</button></div>' +
+    '<p class="hint">设置自动保存，下次打开仍然有效。更换密钥后，请重新复制接入信息。</p>' +
+    '<p class="hint">适用于能调用本机接口的 AI 助手；普通网页聊天不能直接连接。<br>只访问项目中已保存的文档，AI 修改后请重新加载文档查看。</p>' +
+    '<p id="aiMessage" role="status" aria-live="polite"></p>' +
+    '<textarea id="aiManualCopy" readonly hidden aria-label="接入信息：请手动复制"></textarea>' +
+    '<div class="actions"><button class="btn" id="aiClose">完成</button></div></div>';
+  ov.classList.add('on');
+  const panel = $('.ai-connection', ov);
+  let pending = false, closed = false;
+  const alive = () => !closed && panel.isConnected;
+  const message = text => { if (alive()) $('#aiMessage', panel).textContent = text; };
+  const paint = () => {
+    if (!alive()) return;
+    $('#aiEnabled', panel).checked = current.enabled;
+    $('#aiWritable', panel).checked = current.writable;
+    $('#aiAddress', panel).value = current.enabled ? current.address : '';
+    $('#aiKey', panel).value = current.token;
+    $('#aiStatus', panel).textContent = current.enabled
+      ? '已开启 · ' + (current.writable ? '允许修改' : '只读') +
+        (current.last_access ? ' · 最近连接 ' + current.last_access : ' · 等待 AI 接入')
+      : '未开启 · AI 无法访问';
+    $('#aiEnabled', panel).disabled = pending;
+    ['aiWritable', 'aiCopyAll', 'aiTest', 'aiReset', 'aiCopyKey', 'aiCopyAddress'].forEach(id => {
+      $('#' + id, panel).disabled = pending || !current.enabled;
+    });
+  };
+  const change = async payload => {
+    pending = true; paint();
+    try {
+      current = await api('/api/ai-connection', payload);
+      message(payload.reset_key ? '密钥已更换，旧密钥已失效。' : '设置已保存');
+      if (alive()) { $('#aiManualCopy', panel).value = ''; $('#aiManualCopy', panel).hidden = true; }
+    } catch (e) { message('保存失败：' + e.message); }
+    finally { pending = false; paint(); }
+  };
+  const copy = async text => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message('已复制，可粘贴到本机 AI 助手中。');
+    } catch (_) {
+      if (!alive()) return;
+      const box = $('#aiManualCopy', panel);
+      box.hidden = false; box.value = text; box.focus(); box.select();
+      message('浏览器未允许自动复制，已选中接入信息，请按 Ctrl+C 复制。');
+    }
+  };
+  $('#aiEnabled', panel).onchange = e => change({enabled: e.target.checked});
+  $('#aiWritable', panel).onchange = e => change({writable: e.target.checked});
+  $('#aiReset', panel).onclick = () => change({reset_key: true});
+  $('#aiCopyAll', panel).onclick = () => copy(current.instructions);
+  $('#aiCopyKey', panel).onclick = () => copy(current.token);
+  $('#aiCopyAddress', panel).onclick = () => copy(current.address);
+  $('#aiTest', panel).onclick = async () => {
+    pending = true; paint();
+    try {
+      const response = await fetch('/api/ai/v1/tools', {headers: {Authorization: 'Bearer ' + current.token}});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '接口暂不可用');
+      message('检测通过：接口可用（' + result.tools.length + ' 项工具）。');
+      current = await api('/api/ai-connection');
+    } catch (e) { message('连接失败：' + e.message); }
+    finally { pending = false; paint(); }
+  };
+  const close = () => {
+    closed = true; clearInterval(timer);
+    document.removeEventListener('keydown', onKey);
+    if (panel.isConnected) { ov.classList.remove('on'); ov.innerHTML = ''; }
+    previousFocus?.focus();
+  };
+  const onKey = e => {
+    if (!alive()) return;
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    if (e.key === 'Tab') {
+      const controls = $$('button:not(:disabled), input:not(:disabled), textarea:not([hidden])', panel);
+      const first = controls[0], last = controls[controls.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  };
+  const timer = setInterval(async () => {
+    if (!alive()) { clearInterval(timer); document.removeEventListener('keydown', onKey); return; }
+    if (pending) return;
+    try {
+      const fresh = await api('/api/ai-connection');
+      if (!pending) { current = fresh; paint(); }
+    } catch (_) { message('连接状态无法刷新，请检查软件是否仍在运行。'); }
+  }, 2000);
+  document.addEventListener('keydown', onKey);
+  $('#aiClose', panel).onclick = close;
+  paint(); message(current.error || ''); $('#aiEnabled', panel).focus();
+}
+
 function pluginManager() {
   const ov = $('#overlay');
   const rows = state.plugins || [];
@@ -2169,6 +2430,7 @@ function bind() {
   $('#btnDeleteDoc').onclick = () => state.active && deleteDoc(state.active);
   $('#btnCollapse').onclick = () => document.body.classList.toggle('side-collapsed');
   $('#btnPlugins').onclick = pluginManager;
+  $('#btnAiConnect').onclick = showModelAssistant;
   $('#btnInsertImage').onclick = insertImageWithPlugin;
   $('#btnExportPlugin').onclick = exportWithPlugin;
   $('#pluginPackageFile').addEventListener('change', e => {

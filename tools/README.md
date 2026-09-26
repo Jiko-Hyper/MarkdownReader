@@ -56,7 +56,7 @@ python tools/scripts/bench_interaction.py                         # 交互性能
 ## 插件工具
 
 ```powershell
-python tools/scripts/build_official_plugins.py        # 重新打包三个官方离线插件
+python tools/scripts/build_official_plugins.py        # 重新打包四个官方离线插件
 python tools/scripts/build_plugin.py <插件目录> -o <输出目录>
 python tools/scripts/install_official_plugins.py      # 把插件安装进默认工作区
 python tools/scripts/verify_official_plugins.py       # 校验插件包哈希与清单
@@ -83,3 +83,5 @@ gcc -shared -O2 -Wall -Wextra -static-libgcc mdreader/native_bridge.c `
 | `make_icon.py` | 生成应用图标（需要 Pillow） |
 | `MDReader.rc` | windres 生成的资源脚本（构建产物，可安全删除） |
 | `scripts/` | 验收、基准、插件打包与安装脚本 |
+
+格式转换插件首次构建前，执行 `python -m pip install -r plugins/official/document-convert/requirements.txt --target plugins/conversion-dependencies`。仅重建转换插件可运行 `python tools/scripts/build_conversion_plugin.py`；它同时更新宿主受信清单。

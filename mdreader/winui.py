@@ -950,6 +950,10 @@ SHORTCUTS = (
     ("Ctrl+W", "关闭当前标签"),
     ("Ctrl+Tab", "切换标签"),
     ("Ctrl+E", "预览 / 源码"),
+    ("Ctrl+F", "搜索文章：高亮全部匹配，循环前后查找与首尾直达"),
+    ("Ctrl+M", "正文：切换预览 / 源码并定位选中文字"),
+    ("Ctrl+Home", "正文：光标移到文章第一行"),
+    ("Ctrl+End", "正文：光标移到文章最后一行"),
     ("Ctrl+B", "显示 / 隐藏侧栏"),
     ("Delete", "项目树：删除选中的文件或文件夹（需确认）"),
     ("Ctrl+M", "项目树：更改选中目标的标题"),
@@ -2082,7 +2086,7 @@ class FileDrop:
 class MarkdownWindow(DocumentActions):
     """Tkinter preview + navigation window over a MDReader workspace."""
 
-    def __init__(self, workspace_root: str, url: str = "", on_open_browser=None):
+    def __init__(self, workspace_root: str, url: str = "", on_open_browser=None, connection_api=None):
         from .display import enable_high_dpi
         enable_high_dpi()
         import tkinter as tk
@@ -2091,6 +2095,7 @@ class MarkdownWindow(DocumentActions):
 
         self._tk = tk
         self.url = _s(url)
+        self.connection_api = connection_api
         self.on_open_browser = on_open_browser
         self.warning = ""
         try:
@@ -2444,6 +2449,7 @@ class MarkdownWindow(DocumentActions):
         self.root.bind("<Configure>", lambda e: self.hide_theme_menu() if e.widget is self.root else None, add="+")
         if self.url:
             self._tool_button("\U0001f310 浏览器视图", self.open_browser)
+        self.btn_ai = self._tool_button("AI 接入", self.show_ai_connection)
         self.btn_more = self._tool_button("\u22ef 更多", self.show_more_menu)
 
         # -- 表格与常用格式（F04）-----------------------------------------
@@ -2476,6 +2482,7 @@ class MarkdownWindow(DocumentActions):
         self.preview = tk.Text(body, wrap="word", bd=0, highlightthickness=0, undo=False,
                                padx=22, pady=14, spacing1=1, spacing3=2)
         self.preview.grid(row=0, column=0, sticky="nsew")
+        self._bind_navigation(self.preview)
         self.preview.bind("<Control-MouseWheel>", self.on_zoom)
         self.wheel = ScrollCoalescer(self.root, self.preview)
         self.preview._wheel_coalescer = self.wheel
@@ -2516,7 +2523,9 @@ class MarkdownWindow(DocumentActions):
 
     def _bind_keys(self) -> None:
         self.root.bind('<Control-Shift-S>', self._key(self.save_as))
-        self.root.bind('<Control-f>', self._key(self.find_in_document))
+        for widget in (self.root, self.recent_search):
+            for sequence in ('<Control-f>', '<Control-F>'):
+                widget.bind(sequence, self._key(self.toggle_find))
         self.root.bind('<Control-l>', self._key(self.show_outline))
         for seq, fn in (("<Control-s>", self.save_doc), ("<F5>", self.reload_doc),
                         ("<Control-e>", self.toggle_mode), ("<Control-b>", self.toggle_sidebar),
@@ -2561,6 +2570,7 @@ class MarkdownWindow(DocumentActions):
         # The scroll position belongs to the widget on screen, whichever it is.
         try:
             self.active_tab["scroll"] = self.text.yview()[0]
+            self.remember_view_position()
         except Exception:
             pass
         self.active_tab.update(source=self.source, dirty=self.dirty, mode=self.mode,
@@ -2665,6 +2675,7 @@ class MarkdownWindow(DocumentActions):
             self.editor.yview_moveto(tab.get("scroll", 0))
         else:
             self.preview.yview_moveto(tab.get("scroll", 0))
+        self.restore_view_position()
         self.update_title()
         self.update_status()
         self.draw_tabs()
@@ -2771,6 +2782,69 @@ class MarkdownWindow(DocumentActions):
         self.set_theme(theme)
 
     # -- 更多 ------------------------------------------------------------
+    def show_ai_connection(self):
+        if self.connection_api is None:
+            self.notice('连接服务不可用，请从软件主入口重新打开。', error=True)
+            return
+        existing = getattr(self, '_assistant_dialog', None)
+        if existing and existing.window.winfo_exists():
+            existing.window.lift()
+            return
+        from .ai_assistant_ui import AssistantDialog
+        def document():
+            if not self.active_tab:
+                raise ValueError('没有打开的文档，请先打开文档或取消附上文档。')
+            return self.get_text()
+        def insert(text):
+            if not self.active_tab:
+                raise ValueError('请先打开或新建一个文档。')
+            if self.composing():
+                raise ValueError('请先完成输入法输入。')
+            editor, _ = self.editor_context()
+            editor.edit_separator()
+            self._insert_plugin_markdown(text)
+            editor.edit_separator()
+        def snapshot():
+            return {'tab': self.active_tab, 'text': document()}
+        def apply_edit(before, text):
+            if self.active_tab is not before['tab']:
+                raise ValueError('当前文档已切换，请回到原文档后再应用。')
+            if document() != before['text']:
+                raise ValueError('文档在请求后已变化，请重新发送要求以生成最新修改。')
+            if self.composing():
+                raise ValueError('请先完成输入法输入。')
+            preview = self.mode != 'source'
+            editor, _ = self.editor_context()
+            automatic = editor.cget('autoseparators')
+            editor.configure(autoseparators=False)
+            editor.edit_separator()
+            try:
+                editor.delete('1.0', 'end')
+                editor.insert('1.0', text)
+            finally:
+                editor.edit_separator()
+                editor.configure(autoseparators=automatic)
+            editor.edit_modified(True)
+            self.on_modified()
+            if preview:
+                self.toggle_mode()
+        try:
+            self._assistant_dialog = AssistantDialog(self.root, self.connection_api.providers, self.pal,
+                                                       get_document=document, insert_reply=insert,
+                                                       get_snapshot=snapshot, apply_edit=apply_edit)
+        except (ValueError, OSError) as exc:
+            self.notice(str(exc), error=True)
+
+    def show_external_ai_connection(self):
+        if self.connection_api is None:
+            return
+        existing = getattr(self, '_ai_dialog', None)
+        if existing and existing.window.winfo_exists():
+            existing.window.lift()
+            return
+        from .ai_connection_ui import AiConnectionDialog
+        self._ai_dialog = AiConnectionDialog(self.root, self.connection_api, self.pal)
+
     def show_more_menu(self):
         """Toolbar overflow: the place new secondary actions go."""
         self.hide_theme_menu()
@@ -2795,6 +2869,13 @@ class MarkdownWindow(DocumentActions):
             popup.add_cascade(label="用插件导出", menu=formats)
         else:
             popup.add_command(label="用插件导出（没有启用的导出插件）…", command=self.manage_plugins)
+        if entries["conversions"]:
+            conversion_menu = self._tk.Menu(popup, tearoff=0, background=self.pal["side"],
+                foreground=self.pal["fg"], activebackground=self.pal["sel"],
+                activeforeground=self.pal["fg"], bd=0)
+            for label, action in entries["conversions"]:
+                conversion_menu.add_command(label=label, command=action)
+            popup.add_cascade(label="文档格式转换", menu=conversion_menu)
         label, action = entries["manage"]
         popup.add_command(label=label, command=action)
         popup.add_separator()
@@ -2807,6 +2888,8 @@ class MarkdownWindow(DocumentActions):
         popup.add_command(label="粘贴为表格…", command=self.paste_as_table)
         popup.add_command(label="代码块", command=lambda: self.format_selection("code_block"))
         popup.add_separator()
+        popup.add_command(label="AI 接入…", command=self.show_ai_connection)
+        popup.add_command(label="外部 AI 控制接口（高级）…", command=self.show_external_ai_connection)
         popup.add_command(label="关于 %s" % core.APP_NAME, command=self.show_about)
         popup.add_command(label="打开工作区文件夹", command=self.open_workspace_folder)
         popup.add_command(label="快捷键说明", command=self.show_shortcuts)
@@ -3150,6 +3233,12 @@ class MarkdownWindow(DocumentActions):
         self.theme_popup.configure(highlightbackground=pal["rule"])
         from .display import style_titlebar
         style_titlebar(self.root, self.dark, pal["side"], pal["fg"])
+        finder = getattr(self, '_find_dialog', None)
+        if finder is not None and not finder.closed:
+            finder.apply_theme()
+        assistant = getattr(self, '_assistant_dialog', None)
+        if assistant is not None and not assistant.closed:
+            assistant.apply_theme(pal)
         self.update_title()
         self.update_status()
 
@@ -4209,6 +4298,8 @@ class MarkdownWindow(DocumentActions):
         """「更多」菜单里的插件条目；界面与测试都从这里取，避免两处不一致。"""
         images = self.plugin_commands(core.PL.CAP_IMAGE_INSERT)
         exports = self.plugin_commands(core.PL.CAP_EXPORT)
+        from .conversion import show_conversion
+        conversions = self.plugin_commands(core.PL.CAP_CONVERT)
         return {
             "insert": (("插入图片（%s）…" % images[0]["plugin_name"]) if images
                        else "插入图片（插件未启用）…",
@@ -4216,6 +4307,8 @@ class MarkdownWindow(DocumentActions):
             "exports": [("%s（.%s）" % (row["title"], row["extension"]),
                          (lambda item=row: self.plugin_export_document(item)))
                         for row in exports],
+            "conversions": [(row["title"], lambda item=row: show_conversion(self, item))
+                            for row in conversions],
             "manage": ("插件管理…", self.manage_plugins),
         }
 
@@ -4681,6 +4774,9 @@ class MarkdownWindow(DocumentActions):
         self.preview.configure(state="disabled")
         self.mode = "preview"
         self.update_status()
+        finder = getattr(self, '_find_dialog', None)
+        if finder is not None and not finder.closed:
+            finder.refresh(reset=False)
 
     # -- per-tab editors -------------------------------------------------
     def _style_widget(self, widget, force=False):
@@ -4732,6 +4828,7 @@ class MarkdownWindow(DocumentActions):
         editor.grid(row=0, column=0, sticky="nsew")
         editor.grid_remove()
         editor.bind("<<Modified>>", self.on_modified)
+        self._bind_navigation(editor)
         # 粘贴 TSV 时先给预览（F04）；普通粘贴不拦，交回 Tk 默认行为。
         editor.bind("<<Paste>>", self.on_editor_paste, add="+")
         editor.bind("<Control-MouseWheel>", self.on_zoom)
@@ -4838,6 +4935,9 @@ class MarkdownWindow(DocumentActions):
         widget per document was introduced (0.2.8 regression: every tab editor
         stayed non-editable).
         """
+        finder = getattr(self, '_find_dialog', None)
+        if finder is not None and (finder.text is not widget or finder.tab is not self.active_tab):
+            finder.close()
         if cleared is None:
             cleared = [ime for ime in self._imes if ime.editor is not widget]
         else:
@@ -4903,7 +5003,83 @@ class MarkdownWindow(DocumentActions):
         if self.active_tab is not None:
             self.active_tab["source"] = self.source
 
+    def _bind_navigation(self, widget):
+        for sequence in ('<Control-f>', '<Control-F>'):
+            widget.bind(sequence, self._key(self.toggle_find))
+        # Bind on the body widget, before Tk's Text class handles Ctrl+M as
+        # Return; tree/search/dialog shortcuts retain their own meaning.
+        widget.bind("<Control-m>", self._key(self.switch_at_selection))
+        widget.bind("<Control-Home>", self._key(lambda: self.document_edge(False)))
+        widget.bind("<Control-End>", self._key(lambda: self.document_edge(True)))
+
+    def document_edge(self, last=False):
+        if self.active_tab is None:
+            return
+        self.text.tag_remove("sel", "1.0", "end")
+        self.text.mark_set("insert", "end-1c" if last else "1.0")
+        self.text.see("insert")
+        self.text.yview_moveto(1.0 if last else 0.0)
+        self.text.focus_set()
+        self.remember_view_position()
+
+    def remember_view_position(self):
+        if self.active_tab is not None:
+            saved = {
+                "y": self.text.yview()[0], "x": self.text.xview()[0],
+                "cursor": self.text.index("insert")}
+            top = self.text.index("@0,0")
+            line = self.text.dlineinfo(top)
+            if self.text.winfo_ismapped() and line:
+                saved.update(top=top, screen_y=line[1])
+            self.active_tab.setdefault("views", {})[self.mode] = saved
+
+    def restore_view_position(self):
+        if self.active_tab is None:
+            return
+        saved = self.active_tab.get("views", {}).get(self.mode)
+        if saved:
+            self.root.update_idletasks()
+            self.text.mark_set("insert", saved.get("cursor", "1.0"))
+            if saved.get("top") and self.text.winfo_ismapped():
+                # Tk estimates off-screen line heights until asked to measure
+                # them. A fraction alone therefore drifts on long documents.
+                pixels = self.text.count("1.0", "end", "update", "ypixels")
+                total = pixels[0] if isinstance(pixels, tuple) else pixels
+                self.text.yview(saved["top"])
+                self.root.update_idletasks()
+                line = self.text.dlineinfo(saved["top"])
+                if line and total:
+                    delta = line[1] - saved.get("screen_y", line[1])
+                    self.text.yview_moveto(self.text.yview()[0] + delta / total)
+            else:
+                self.text.yview_moveto(saved.get("y", 0))
+            self.text.xview_moveto(saved.get("x", 0))
+
+    def switch_at_selection(self):
+        from .navigation import map_selection, widget_text, widget_index
+        if self.active_tab is None:
+            return
+        ranges = self.text.tag_ranges("sel")
+        selected = None
+        if ranges:
+            origin = widget_text(self.text)
+            selected = (origin, len(widget_text(self.text, ranges[0])),
+                        len(widget_text(self.text, ranges[1])))
+        self.toggle_mode()
+        if selected:
+            origin, start, end = selected
+            target = widget_text(self.text)
+            first, last = map_selection(origin, target, start, end)
+            a, b = widget_index(self.text, target, first), widget_index(self.text, target, last)
+            self.text.tag_remove("sel", "1.0", "end")
+            self.text.tag_add("sel", a, b)
+            self.text.mark_set("insert", a)
+            self.text.see(a)
+            self.remember_view_position()
+        self.text.focus_set()
+
     def toggle_mode(self) -> None:
+        self.remember_view_position()
         if self.mode == "preview":
             editor = self.active_tab.get("editor") if self.active_tab is not None else None
             if editor is None or not editor.winfo_exists():
@@ -4923,6 +5099,7 @@ class MarkdownWindow(DocumentActions):
                 self.set_dirty(True)
             self.render()
             self.notice("预览模式")
+        self.restore_view_position()
         self.update_status()
 
     def get_text(self) -> str:
@@ -5467,6 +5644,9 @@ class MarkdownWindow(DocumentActions):
                     return
         for tab in self.tabs:
             self.ws.recovery.discard(self.recovery_identity(tab))
+        finder = getattr(self, '_find_dialog', None)
+        if finder is not None:
+            finder.close()
         try:
             drop = getattr(self, "_drop", None)
             if drop is not None:

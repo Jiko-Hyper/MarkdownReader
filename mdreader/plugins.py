@@ -3,7 +3,7 @@
 
 设计边界（对应任务书 §2.1–§2.4）：
 
-* 只服务本阶段的三类扩展——``editor.image_insert`` 与 ``export.format``——
+* 服务三类扩展：``editor.image_insert``、``export.format``、``file.convert``；
   不发布通用 SDK、事件总线或任意界面代码扩展。
 * 插件包是**普通 zip**，根目录必须有 ``manifest.json``；除清单允许的字段外
   不接受任何其他键，界面只展示校验过的命令/格式文字，不加载插件提供的 HTML。
@@ -39,7 +39,8 @@ TRUST_FILE = "plugin_trust.json"
 
 CAP_IMAGE_INSERT = "editor.image_insert"
 CAP_EXPORT = "export.format"
-CAPABILITIES = (CAP_IMAGE_INSERT, CAP_EXPORT)
+CAP_CONVERT = "file.convert"
+CAPABILITIES = (CAP_IMAGE_INSERT, CAP_EXPORT, CAP_CONVERT)
 
 #: 安装包与解包后的上限，防止一个包把磁盘塞满。
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
@@ -289,7 +290,7 @@ def _command(raw, capabilities, seen, prefix: str, index: int) -> dict:
     command = {"id": cid, "title": title, "capability": capability, "method": method,
                "description": _text(raw.get("description", ""), "command.description", 200,
                                     allow_empty=True)}
-    if capability == CAP_EXPORT:
+    if capability in (CAP_EXPORT, CAP_CONVERT):
         fmt = _text(raw.get("format"), "command.format", 32)
         if not _FORMAT_RE.match(fmt):
             raise ManifestError(label + " format 只能是小写字母、数字与 . _ -")

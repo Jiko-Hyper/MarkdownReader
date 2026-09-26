@@ -18,6 +18,8 @@ Command line:
     --port N, -p N            固定端口
     --browser, -b             只用系统浏览器，不开窗口
     --serve                   只启动服务（不打开任何界面）
+    --ai-api                  启用 AI 接口（密钥来自 MDREADER_AI_TOKEN 环境变量）
+    --ai-write                允许 AI 新建和修改项目文档（须同时启用 --ai-api）
     --open FILE, -o FILE      启动时载入一个 .md 文件
     --selftest                检查内嵌窗口能否正常启动
     --version / --help
@@ -374,13 +376,14 @@ class NativeWindow:
     """Tk shell + WebView2 child window (best effort)."""
 
     def __init__(self, url: str, title: str = APP_TITLE, selftest: bool = False,
-                 workspace: str | None = None):
+                 workspace: str | None = None, connection_api=None):
         from .display import enable_high_dpi
         enable_high_dpi()
         import tkinter as tk
 
         self.tk = tk
         self.url = url
+        self.connection_api = connection_api
         self.available = False
         self.error = ""
         self._selftest = selftest
@@ -413,6 +416,7 @@ class NativeWindow:
         self.btn_reload = mkbtn("⟳ 刷新", self.reload)
         mkbtn("🌐 在浏览器打开", self.open_browser)
         mkbtn("🗀 工作区目录", self.open_workspace)
+        self.btn_ai = mkbtn("AI 接入", self.show_ai_connection)
         self.btn_more = mkbtn("⋯ 更多", self.show_more_menu)
 
         self.status = tk.Label(bar, text="正在启动…", bg="#f6f7f9", fg="#656d76",
@@ -610,9 +614,23 @@ class NativeWindow:
             say("无法打开工作区目录:", exc)
 
     # -- 更多：以后新增的次要功能放这里 ---------------------------------
+    def show_ai_connection(self):
+        if self.connection_api is None:
+            self._info('AI 接入', '连接服务不可用', ['请从软件主入口重新打开。'])
+            return
+        existing = getattr(self, '_assistant_dialog', None)
+        if existing and existing.window.winfo_exists():
+            existing.window.lift()
+            return
+        from .ai_assistant_ui import AssistantDialog
+        from .winui import THEMES
+        theme = core.read_ui_settings(self.workspace)['theme']
+        self._assistant_dialog = AssistantDialog(self.root, self.connection_api.providers, THEMES[theme])
+
     def show_more_menu(self):
         menu = self.tk.Menu(self.root, tearoff=0, bg="#ffffff", fg="#1f2328",
                             activebackground="#eef1f4", activeforeground="#1f2328", bd=0)
+        menu.add_command(label="AI 接入…", command=self.show_ai_connection)
         menu.add_command(label="关于 %s" % core.APP_NAME, command=self.show_about)
         menu.add_command(label="打开工作区文件夹", command=self.open_workspace)
         menu.add_command(label="快捷键说明", command=self.show_shortcuts)
@@ -766,8 +784,8 @@ def focus_url(base_url: str, focus) -> str:
 
 
 def run(workspace: str | None = None, port: int = 0, open_browser: bool = False,
-        use_window: bool = True, open_files=None):
-    ws, httpd, real_port = core.serve(workspace, port)
+        use_window: bool = True, open_files=None, ai_token=None, ai_writable=False):
+    ws, httpd, real_port = core.serve(workspace, port, ai_token=ai_token, ai_writable=ai_writable)
     focus = load_open_files(ws, open_files)
     url = focus_url("http://127.0.0.1:%d/" % real_port, focus)
 
@@ -776,14 +794,19 @@ def run(workspace: str | None = None, port: int = 0, open_browser: bool = False,
     say("  地址   : %s" % url)
     say("  内嵌视图: %s" % ("WebView2" if webview2_available() else "内置 tkinter 窗口（未检测到 WebView2Loader.dll）"))
     
+    thread = core.ServerThread(httpd)
+    thread.start()
+    if ai_token:
+        say("  AI 接口: http://127.0.0.1:%d/api/ai/v1/tools（%s）" %
+            (real_port, "可写" if ai_writable else "只读"))
     if open_browser or not use_window:
         core.api_of(httpd).mode = "browser"
         webbrowser.open(url)
-        _idle()
+        try:
+            _idle()
+        finally:
+            thread.stop()
         return
-
-    thread = core.ServerThread(httpd)
-    thread.start()
     api = core.api_of(httpd)
 
     try:
@@ -793,20 +816,22 @@ def run(workspace: str | None = None, port: int = 0, open_browser: bool = False,
         api.mode = "browser"
         webbrowser.open(url)
         try:
-            thread.stop()
-        finally:
             _idle()
+        finally:
+            thread.stop()
         return
 
     if webview2_available():
         try:
-            win = NativeWindow(url, workspace=ws.root)
+            win = NativeWindow(url, workspace=ws.root, connection_api=api)
         except Exception as exc:  # tkinter itself failed
             say("  无法创建窗口（%s），改用系统浏览器" % exc)
             api.mode = "browser"
             webbrowser.open(url)
-            thread.stop()
-            _idle()
+            try:
+                _idle()
+            finally:
+                thread.stop()
             return
         if not win.available:
             # embedded view could not start: keep the window, but drive the
@@ -821,10 +846,12 @@ def run(workspace: str | None = None, port: int = 0, open_browser: bool = False,
             say("  内置窗口不可用（%s），改用系统浏览器" % exc)
             api.mode = "browser"
             webbrowser.open(url)
-            thread.stop()
-            _idle()
+            try:
+                _idle()
+            finally:
+                thread.stop()
             return
-        win = MarkdownWindow(ws.root, url=url)
+        win = MarkdownWindow(ws.root, url=url, connection_api=api)
         if open_files:
             win.open_local_files(open_files)
 
@@ -857,10 +884,16 @@ def main(argv=None):
     do_selftest = False
     serve_only = False
     open_files = []
+    ai_enabled = False
+    ai_writable = False
 
     i = 0
     while i < len(argv):
         a = argv[i]
+        if a == "--ai-api":
+            ai_enabled = True; i += 1; continue
+        if a == "--ai-write":
+            ai_writable = True; i += 1; continue
         if a in ("--workspace", "-w") and i + 1 < len(argv):
             workspace = argv[i + 1]; i += 2; continue
         if a in ("--port", "-p") and i + 1 < len(argv):
@@ -886,21 +919,40 @@ def main(argv=None):
             open_files.append(a)
         i += 1
 
+    ai_token = os.environ.get("MDREADER_AI_TOKEN", "") if ai_enabled else None
+    if ai_writable and not ai_enabled:
+        say("--ai-write 必须与 --ai-api 一起使用")
+        return 2
+    if ai_enabled:
+        from .ai_api import AiApi
+        try:
+            AiApi(None, ai_token, ai_writable)
+        except ValueError as exc:
+            say(str(exc))
+            return 2
     if do_selftest:
         return selftest(workspace)
     if no_window:
         open_browser = True
     if serve_only and not open_browser:
-        ws, httpd, real_port = core.serve(workspace, port)
+        ws, httpd, real_port = core.serve(workspace, port, ai_token=ai_token, ai_writable=ai_writable)
         core.api_of(httpd).mode = "browser"
-        core.ServerThread(httpd).start()
+        thread = core.ServerThread(httpd)
+        thread.start()
         focus = load_open_files(ws, open_files)
         say("%s %s 服务已启动" % (APP_TITLE, core.APP_VERSION))
         say("  工作区 : %s" % ws.root)
         say("  地址   : %s" % focus_url("http://127.0.0.1:%d/" % real_port, focus))
-        _idle()
+        if ai_enabled:
+            say("  AI 接口: http://127.0.0.1:%d/api/ai/v1/tools（%s）" %
+                (real_port, "可写" if ai_writable else "只读"))
+        try:
+            _idle()
+        finally:
+            thread.stop()
         return
-    run(workspace=workspace, port=port, open_browser=open_browser, open_files=open_files)
+    run(workspace=workspace, port=port, open_browser=open_browser, open_files=open_files,
+        ai_token=ai_token, ai_writable=ai_writable)
     return 0
 
 

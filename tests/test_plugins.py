@@ -497,14 +497,14 @@ class TrustTests(PluginTestCase):
             self.store().install(path)
         self.assertIn("还没有发布", str(caught.exception))
 
-    def test_shipped_trust_registry_matches_the_three_official_packages(self):
+    def test_shipped_trust_registry_matches_the_official_packages(self):
         registry = P.TrustRegistry()          # 随程序分发的那一份
         ids = {row["id"] for row in registry.reserved()}
         self.assertLessEqual({"mdreader.image-insert", "mdreader.export-pdf",
                               "mdreader.export-docx"}, ids)
         released = {row["id"] for row in registry.reserved() if row["released"]}
         self.assertEqual(released, {"mdreader.image-insert", "mdreader.export-pdf",
-                                    "mdreader.export-docx"})
+                                    "mdreader.export-docx", "mdreader.document-convert"})
         packages = sorted(glob.glob(os.path.join(ROOT, "plugins", "packages", "*.zip")))
         self.assertEqual(len(packages), len(released), packages)
         for package in packages:

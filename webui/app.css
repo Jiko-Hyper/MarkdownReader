@@ -296,6 +296,17 @@ body.dirty .dirty-dot{display:block}
 .modal h3{margin:0 0 4px; font-size:16px}
 .modal .hint{color:var(--fg-muted); font-size:12.5px; margin:0 0 14px; line-height:1.7}
 .modal .field{margin-bottom:12px}
+.ai-connection{max-width:620px}
+.model-assistant{width:min(780px,94vw);max-width:780px;max-height:92vh;overflow:auto}
+.model-assistant input,.model-assistant select,.model-assistant textarea{width:100%}
+.model-assistant .ai-toggle input{width:auto}
+.model-assistant .actions{flex-wrap:wrap}
+#modelTranscript{white-space:pre-wrap;overflow:auto;min-height:130px;max-height:260px;background:var(--bg);padding:12px;font:inherit}
+.ai-toggle{display:flex;align-items:center;gap:8px;margin:14px 0}
+.ai-toggle input{width:auto}
+.ai-copy-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.ai-copy-row input{flex:1;min-width:180px}
+#aiManualCopy{width:100%;min-height:140px}
 .modal .actions{display:flex; justify-content:flex-end; gap:8px; margin-top:18px}
 .modal .actions .spacer{margin-right:auto}
 .modal.wide{width:min(620px,100%)}

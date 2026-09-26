@@ -466,19 +466,16 @@ class DocumentUiTests(unittest.TestCase):
         self.win.find_in_document()
         dialog = self.toplevel("文档内查找")
         self.addCleanup(dialog.destroy)
-        entries = [w for w in dialog.winfo_children() if w.winfo_class() == "Entry"]
-        labels = [w for w in dialog.winfo_children() if w.winfo_class() == "Label"]
-        self.assertTrue(entries, "查找框没有创建")
-        entries[0].insert(0, "关键词甲")
-        buttons(dialog)["下一处"].invoke()
+        finder = self.win._find_dialog
+        finder.entry.insert(0, "关键词甲")
+        finder.refresh()
         self.assertTrue(self.win.text.tag_ranges("find_hit"), "命中处没有高亮")
-        self.assertIn("位置", labels[0].cget("text"))
-        buttons(dialog)["下一处"].invoke()
+        self.assertIn("共 2 个匹配", finder.status.cget("text"))
+        buttons(dialog)["next"].invoke()
         self.assertTrue(self.win.text.tag_ranges("find_hit"))
-        entries[0].delete(0, "end")
-        entries[0].insert(0, "根本没有的词")
-        buttons(dialog)["下一处"].invoke()
-        self.assertEqual(labels[0].cget("text"), "无匹配结果")
+        finder.query.set("根本没有的词")
+        finder.refresh()
+        self.assertIn("无匹配结果", finder.status.cget("text"))
         self.assertFalse(self.win.dirty, "查找不得改动正文或未保存状态")
         self.assertEqual(self.win.get_text(), text)
 
