@@ -231,6 +231,17 @@ def render_png(size: int = 64) -> bytes:
 
 def apply_window_icon(window, size: int = 64) -> bool:
     """给 Tk 窗口挂上图标；失败安静跳过。"""
+    # Do not flush Tk's idle queue while its fonts/layout are still being built.
+    # Mapping supplies the real outer HWND after construction, before interaction.
+    if not getattr(window, '_mdreader_taskbar_binding', None):
+        def on_map(event):
+            if event.widget is window:
+                try:
+                    from .taskbar import configure_window
+                    configure_window(window, flush=False)
+                except (OSError, AttributeError):
+                    pass
+        window._mdreader_taskbar_binding = window.bind('<Map>', on_map, add='+')
     try:
         data = render_png(size)
         if not data:

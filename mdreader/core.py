@@ -37,7 +37,7 @@ from . import tables as TB
 from .storage import atomic_write, is_within, safe_join
 
 APP_NAME = "MDReader"
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.2"
 WS_DIRNAME = ".mdreader"
 PROJECT_FILE = "project.json"
 DOC_EXTS = (".md", ".markdown", ".mdown", ".mkd", ".txt")

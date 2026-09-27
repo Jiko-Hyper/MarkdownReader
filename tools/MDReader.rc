@@ -4,8 +4,8 @@
 1 24 "D:/AIWORKSPACE/Deepseek Harness/003/MarkdownReader/build/launcher/MDReader.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION    0, 4, 1, 0
-PRODUCTVERSION 0, 4, 1, 0
+FILEVERSION    0, 4, 2, 0
+PRODUCTVERSION 0, 4, 2, 0
 FILEFLAGSMASK  0x3fL
 FILEFLAGS      0x0L
 FILEOS         VOS_NT_WINDOWS32
@@ -18,12 +18,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "MDReader"
             VALUE "FileDescription",  "MDReader - Markdown 阅读与项目整理"
-            VALUE "FileVersion",      "0.4.1"
+            VALUE "FileVersion",      "0.4.2"
             VALUE "InternalName",     "MDReader"
             VALUE "LegalCopyright",   "MIT License"
             VALUE "OriginalFilename", "MDReader.exe"
             VALUE "ProductName",      "MDReader"
-            VALUE "ProductVersion",   "0.4.1"
+            VALUE "ProductVersion",   "0.4.2"
         END
     END
     BLOCK "VarFileInfo"

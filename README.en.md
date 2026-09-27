@@ -18,6 +18,12 @@ Tabbed editing, tables, math, and Word/PDF export — available offline.
 
 > This is the English documentation. The application and installer currently use Simplified Chinese; multilingual UI support is planned.
 
+## 0.4.2: taskbar identity fix
+
+The Windows release now declares its own application identity, purple MD icon, and relaunch command. Pinning a running window launches `MDReader.exe` instead of the internal Python interpreter. Installer-created shortcuts use the same identity; source development uses a separate identity.
+
+If an older release created a Python taskbar pin, save your work, close the old version, upgrade to 0.4.2, unpin the old Python item, and pin the new running app once. Existing pins are not modified automatically.
+
 ## Download and install
 
 1. Download `MarkdownReader-<version>-win64.zip` from [Releases](https://github.com/Jiko-Hyper/MarkdownReader/releases), **not** GitHub's “Source code” archive.
@@ -63,7 +69,7 @@ For command-line installation:
 - **Offline format conversion:** in **更多 → 插件管理** (More → Plugin manager), install and enable the bundled `mdreader.document-convert-1.0.0.zip`. Open **更多 → 文档格式转换** (More → Document conversion), choose PDF/DOCX → Markdown or Markdown ↔ HTML, select the source file and a new destination. Save edits first: conversion reads the disk file, preserves the source, and refuses to overwrite an existing output. Scanned PDFs have no OCR support; retain generated image folders alongside Markdown output. This feature currently has a desktop menu only and requires host version 0.4.0 or later. See [conversion guide (Chinese)](plugins/official/document-convert/README.md).
 - **Find and navigation:** `Ctrl+F` opens a themed, draggable search panel. Typing counts and highlights all matches. First/previous/next/last controls navigate matches, with previous/next wrapping around. Press `Ctrl+F` again, Esc, or click outside to close. Select text in the desktop document and press `Shift+M` to switch between preview and source at the matching text. Without a selection, each view restores its own position, remembered per document across normal restarts. `Ctrl+Home` / `Ctrl+End` move to the beginning/end.
 
-**Upgrade from 0.3.0 / 0.4.0:** save your documents, close the application, download `MarkdownReader-0.4.1-win64.zip` from this release, extract it fully, and run the installer using the existing application and data folders. Install and enable the new conversion plugin in Plugin manager. Updating only the plugin ZIP does not update an older host.
+**Upgrade from 0.3.0 / 0.4.0:** save your documents, close the application, download `MarkdownReader-0.4.2-win64.zip` from this release, extract it fully, and run the installer using the existing application and data folders. Install and enable the new conversion plugin in Plugin manager. Updating only the plugin ZIP does not update an older host.
 
 ## 0.4.1 maintenance update
 

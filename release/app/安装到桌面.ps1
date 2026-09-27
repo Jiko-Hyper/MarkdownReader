@@ -203,6 +203,8 @@ if (-not $NoShortcut) {
     $sc.IconLocation = "$targetExe,0"
     $sc.Description = 'MDReader - Markdown 阅读与项目整理'
     $sc.Save()
+    $identityProcess = Start-Process -FilePath $targetExe -ArgumentList ('--register-shortcut "{0}"' -f $lnk) -WindowStyle Hidden -Wait -PassThru
+    if ($identityProcess.ExitCode -ne 0) { throw "任务栏快捷方式身份设置失败: $($identityProcess.ExitCode)" }
     if (Test-Path -LiteralPath $lnk) { Write-Ok "桌面快捷方式: $lnk" } else { Write-Warn2 "快捷方式创建失败" }
 }
 

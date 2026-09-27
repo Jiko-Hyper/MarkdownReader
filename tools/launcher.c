@@ -11,9 +11,46 @@
  * 构建：tools/build_launcher.ps1（gcc + windres），源码不到 100 行。
  */
 
+#define COBJMACROS
 #include <windows.h>
+#include <shobjidl.h>
+#include <propkey.h>
+#include <propvarutil.h>
 #include <shellapi.h>
 #include <stdio.h>
+
+/* Store the same stable AppUserModelID on installer-created shortcuts. */
+static int register_shortcut(const wchar_t *path)
+{
+    HRESULT init = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (FAILED(init)) return 10;
+    IShellLinkW *link = NULL;
+    IPersistFile *file = NULL;
+    IPropertyStore *store = NULL;
+    HRESULT hr = CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER,
+                                  &IID_IShellLinkW, (void **)&link);
+    if (SUCCEEDED(hr)) hr = IShellLinkW_QueryInterface(link, &IID_IPersistFile, (void **)&file);
+    if (SUCCEEDED(hr)) hr = IPersistFile_Load(file, path, STGM_READWRITE);
+    if (SUCCEEDED(hr)) hr = IShellLinkW_QueryInterface(link, &IID_IPropertyStore, (void **)&store);
+    PROPVARIANT value;
+    PropVariantInit(&value);
+    if (SUCCEEDED(hr)) {
+        const wchar_t *appId = L"JikoHyper.MDReader.Desktop";
+        size_t bytes = (wcslen(appId) + 1) * sizeof(wchar_t);
+        value.pwszVal = (LPWSTR)CoTaskMemAlloc(bytes);
+        if (!value.pwszVal) hr = E_OUTOFMEMORY;
+        else { memcpy(value.pwszVal, appId, bytes); value.vt = VT_LPWSTR; }
+    }
+    if (SUCCEEDED(hr)) hr = IPropertyStore_SetValue(store, &PKEY_AppUserModel_ID, &value);
+    if (SUCCEEDED(hr)) hr = IPropertyStore_Commit(store);
+    if (SUCCEEDED(hr)) hr = IPersistFile_Save(file, path, TRUE);
+    PropVariantClear(&value);
+    if (store) IPropertyStore_Release(store);
+    if (file) IPersistFile_Release(file);
+    if (link) IShellLinkW_Release(link);
+    CoUninitialize();
+    return SUCCEEDED(hr) ? 0 : 11;
+}
 
 static void fail(const wchar_t *message)
 {
@@ -60,6 +97,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     (void)previous;
     (void)command_line;
     (void)show;
+
+    int argc = 0;
+    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv && argc >= 2 && wcscmp(argv[1], L"--register-shortcut") == 0) {
+        int result = argc == 3 ? register_shortcut(argv[2]) : 12;
+        LocalFree(argv);
+        return result;
+    }
+    if (argv) LocalFree(argv);
 
     wchar_t dir[MAX_PATH * 2];
     self_dir(dir, ARRAYSIZE(dir));

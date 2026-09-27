@@ -13,6 +13,7 @@ try {
     foreach ($file in @('MDReader.exe','main.py','runtime\python.exe','runtime\pythonw.exe','mdreader\core.py')) {
         Set-Content -LiteralPath (Join-Path $source $file) -Value 'fixture'
     }
+    Copy-Item -LiteralPath (Join-Path $root 'build/launcher/MDReader.exe') -Destination (Join-Path $source 'MDReader.exe') -Force
     $installer = Join-Path $source '安装到桌面.ps1'
     Copy-Item -LiteralPath (Join-Path $root 'release\app\安装到桌面.ps1') -Destination $installer
     $wrapper = Join-Path $source '安装到桌面.cmd'

@@ -128,7 +128,7 @@ if ($resourceTool) {
 
 $gccArgs = @('-O2', '-municode', '-mwindows', '-static-libgcc', '-o', $exe, $source)
 if ($resourceTool) { $gccArgs += $res }
-$gccArgs += @('-lcomctl32', '-lshell32')
+$gccArgs += @('-lcomctl32', '-lshell32', '-lole32', '-luuid')
 & $gcc @gccArgs
 if ($LASTEXITCODE -ne 0) { throw 'gcc 编译启动器失败。' }
 

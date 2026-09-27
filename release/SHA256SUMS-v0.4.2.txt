@@ -1,0 +1,1 @@
+eb26f359ee3eef67ae8f060209ae19bf46dd72140b2f1abd11745d18bd7d42ae  MarkdownReader-0.4.2-win64.zip

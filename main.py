@@ -25,6 +25,9 @@ from mdreader.appicon import ensure_tcl_environment
 
 ensure_tcl_environment()
 
+from mdreader.taskbar import set_process_identity
+set_process_identity()
+
 from mdreader.display import enable_high_dpi
 
 enable_high_dpi()

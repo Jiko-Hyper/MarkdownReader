@@ -475,3 +475,8 @@ python main.py --selftest      自检窗口能不能起来
 ## 0.4.1 安装与升级
 
 下载 `MarkdownReader-0.4.1-win64.zip`，保存并关闭旧程序后完整解压，运行 `安装到桌面.cmd` 并选择原程序和数据目录。Word/PDF 导出插件已更新至 1.0.4；旧插件用户请在插件管理中安装随包新版并启用。新增操作见 [README](../README.md)：AI 选区修改、工具栏直接导出、正文 `Shift+M` 定位。
+
+
+## 0.4.2 任务栏图标
+
+升级到 0.4.2 后，取消固定旧的 Python 任务栏图标，打开新版 MDReader 再重新固定。新固定项使用紫色 MD 图标并指向 MDReader.exe；不再固定到内部 pythonw.exe。
