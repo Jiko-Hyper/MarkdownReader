@@ -24,6 +24,23 @@ The Windows release now declares its own application identity, purple MD icon, a
 
 If an older release created a Python taskbar pin, save your work, close the old version, upgrade to 0.4.2, unpin the old Python item, and pin the new running app once. Existing pins are not modified automatically.
 
+## 0.4.3: installation and removal commands
+
+Double-click `安装到桌面.cmd` in the extracted download to install. To uninstall, save your work, close every MDReader window, and double-click **`卸载.cmd` in the installed application folder**. Check the displayed application/data paths and enter `YES` to confirm; Enter alone cancels.
+
+```powershell
+# Install from the extracted download
+.\安装到桌面.cmd
+# Uninstall from the installed application folder
+.\卸载.cmd
+# Explicit target and confirmation for automation
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Apps\MDReader\卸载.ps1" -InstallDir "D:\Apps\MDReader" -Yes -NoPause
+```
+
+Without `-InstallDir`, the script targets its own folder. Running it in an extracted portable copy removes that copy, not another installed copy. `-Yes` skips confirmation; `-NoPause` skips the final wait. The script refuses running applications, unsafe/overlapping paths, damaged configuration, and filesystem links.
+
+Uninstall removes known application files, desktop/Start menu shortcuts pointing to this installation, and its matching Markdown file association. Workspace documents/settings and unrelated top-level files are retained. Do not store personal documents inside application subfolders such as `runtime`, `mdreader`, or `docs`. Remove old taskbar pins manually. Data deletion with `-Purge` is no longer supported.
+
 ## Download and install
 
 1. Download `MarkdownReader-<version>-win64.zip` from [Releases](https://github.com/Jiko-Hyper/MarkdownReader/releases), **not** GitHub's “Source code” archive.
@@ -51,7 +68,7 @@ For command-line installation:
 .\安装到桌面.ps1 -InstallDir D:\Apps\MDReader -WorkspaceDir D:\Documents\MDReader -NoPause
 ```
 
-`-NoUI` skips the folder-selection window. You can also right-click `安装到桌面.ps1` and choose **Run with PowerShell**. To uninstall, run `卸载.ps1` from the installed application folder; workspace data is retained by default.
+`-NoUI` skips the folder-selection window. You can also right-click `安装到桌面.ps1` and choose **Run with PowerShell**. To uninstall, double-click `卸载.cmd` in the installed application folder and enter `YES`; workspace documents and settings are retained.
 
 ### Installation troubleshooting
 
@@ -69,7 +86,7 @@ For command-line installation:
 - **Offline format conversion:** in **更多 → 插件管理** (More → Plugin manager), install and enable the bundled `mdreader.document-convert-1.0.0.zip`. Open **更多 → 文档格式转换** (More → Document conversion), choose PDF/DOCX → Markdown or Markdown ↔ HTML, select the source file and a new destination. Save edits first: conversion reads the disk file, preserves the source, and refuses to overwrite an existing output. Scanned PDFs have no OCR support; retain generated image folders alongside Markdown output. This feature currently has a desktop menu only and requires host version 0.4.0 or later. See [conversion guide (Chinese)](plugins/official/document-convert/README.md).
 - **Find and navigation:** `Ctrl+F` opens a themed, draggable search panel. Typing counts and highlights all matches. First/previous/next/last controls navigate matches, with previous/next wrapping around. Press `Ctrl+F` again, Esc, or click outside to close. Select text in the desktop document and press `Shift+M` to switch between preview and source at the matching text. Without a selection, each view restores its own position, remembered per document across normal restarts. `Ctrl+Home` / `Ctrl+End` move to the beginning/end.
 
-**Upgrade from 0.3.0 / 0.4.0:** save your documents, close the application, download `MarkdownReader-0.4.2-win64.zip` from this release, extract it fully, and run the installer using the existing application and data folders. Install and enable the new conversion plugin in Plugin manager. Updating only the plugin ZIP does not update an older host.
+**Upgrade from 0.3.0 / 0.4.0:** save your documents, close the application, download `MarkdownReader-0.4.3-win64.zip` from this release, extract it fully, and run the installer using the existing application and data folders. Install and enable the new conversion plugin in Plugin manager. Updating only the plugin ZIP does not update an older host.
 
 ## 0.4.1 maintenance update
 

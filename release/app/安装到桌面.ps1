@@ -173,7 +173,7 @@ if ($DesktopOnly) {
             New-Item -ItemType Directory -Force -Path $target | Out-Null
         }
         Get-ChildItem -LiteralPath $here -Force |
-            Where-Object { $_.Name -in @('MDReader.exe', 'main.py', 'mdreader', 'runtime', 'webui', 'assets', 'plugins', 'docs', 'tools', 'tests', 'README.md', 'README.en.md', 'CONTRIBUTING.md', 'LICENSE', 'VERSION.txt', '使用说明.md', '安装到桌面.ps1', '安装到桌面.cmd', '启动 MDReader.bat', '卸载.ps1') } |
+            Where-Object { $_.Name -in @('MDReader.exe', 'main.py', 'mdreader', 'runtime', 'webui', 'assets', 'plugins', 'docs', 'tools', 'tests', 'README.md', 'README.en.md', 'CONTRIBUTING.md', 'LICENSE', 'VERSION.txt', '使用说明.md', '安装到桌面.ps1', '安装到桌面.cmd', '启动 MDReader.bat', '卸载.ps1', '卸载.cmd') } |
             ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force }
         Write-Ok "程序已复制"
     }

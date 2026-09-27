@@ -16,6 +16,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $root 'build/launcher/MDReader.exe') -Destination (Join-Path $source 'MDReader.exe') -Force
     $installer = Join-Path $source '安装到桌面.ps1'
     Copy-Item -LiteralPath (Join-Path $root 'release\app\安装到桌面.ps1') -Destination $installer
+    Copy-Item -LiteralPath (Join-Path $root 'release\app\卸载.ps1'),(Join-Path $root 'release\app\卸载.cmd') -Destination $source
     $wrapper = Join-Path $source '安装到桌面.cmd'
     Copy-Item -LiteralPath (Join-Path $root 'release\app\安装到桌面.cmd') -Destination $wrapper
     Push-Location $source
@@ -23,6 +24,8 @@ try {
     finally { Pop-Location }
     Assert ($LASTEXITCODE -eq 0) 'Double-click installer wrapper failed'
     Assert (Test-Path -LiteralPath (Join-Path $target 'main.py')) 'Wrapper did not install'
+    Assert (Test-Path -LiteralPath (Join-Path $target '卸载.cmd')) 'Uninstall wrapper missing from installed app'
+    Assert (Test-Path -LiteralPath (Join-Path $target '卸载.ps1')) 'Uninstall script missing from installed app'
     Assert ((Get-Content (Join-Path $target 'installation.json') -Raw -Encoding UTF8 | ConvertFrom-Json).workspace -eq $data) 'Custom data path not saved'
     & $installer -InstallDir $target -ShortcutDir $desktop -NoPause
     Assert (Test-Path -LiteralPath (Join-Path $target 'runtime\pythonw.exe')) 'Fresh install failed'

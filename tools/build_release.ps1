@@ -61,6 +61,8 @@ try {
     if (-not (Test-Path -LiteralPath $launcher)) { throw "找不到启动器：$launcher" }
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\test_install.ps1')
     if ($LASTEXITCODE -ne 0) { throw '安装回归测试失败。' }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\test_uninstall.ps1')
+    if ($LASTEXITCODE -ne 0) { throw '卸载回归测试失败。' }
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\test_install_dialog.ps1')
     if ($LASTEXITCODE -ne 0) { throw '安装目录选择窗口测试失败。' }
     & (Join-Path $runtimeDir 'python.exe') (Join-Path $root 'tools\test_launcher.py')

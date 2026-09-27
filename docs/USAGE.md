@@ -480,3 +480,8 @@ python main.py --selftest      自检窗口能不能起来
 ## 0.4.2 任务栏图标
 
 升级到 0.4.2 后，取消固定旧的 Python 任务栏图标，打开新版 MDReader 再重新固定。新固定项使用紫色 MD 图标并指向 MDReader.exe；不再固定到内部 pythonw.exe。
+
+
+## 0.4.3 安装与卸载
+
+安装运行 `安装到桌面.cmd`；卸载时先保存并关闭软件，再从已安装目录运行 `卸载.cmd` 并输入 `YES`。卸载保留独立文档与配置目录。明确指定目录的自动化命令、参数和边界见 [中文 README](../README.md#043安装与卸载命令) / [English README](../README.en.md#043-installation-and-removal-commands)。

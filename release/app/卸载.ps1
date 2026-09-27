@@ -1,109 +1,94 @@
-﻿# ============================================================
-#  MDReader - 卸载
-#
-#  用法：右键本文件 -> 使用 PowerShell 运行
-#     .\卸载.ps1                  删除程序目录 + 桌面快捷方式，保留文档
-#     .\卸载.ps1 -Purge           连 %USERPROFILE%\MDReader（文档与项目）一起删
-#     .\卸载.ps1 -InstallDir DIR  指定当初的安装目录
-#
-#  默认绝不碰用户文档；-Purge 会二次确认后才删除。
-# ============================================================
-
+﻿# MDReader uninstall: keep workspace documents and settings.
 [CmdletBinding()]
 param(
-    [string]$InstallDir = $PSScriptRoot,
-    [switch]$Purge
+    [string]$InstallDir = '',
+    [switch]$Yes,
+    [switch]$NoPause,
+    [switch]$Purge,
+    [string]$ShortcutDir = [Environment]::GetFolderPath('Desktop'),
+    [string]$StartMenuDir = (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
 )
-
 $ErrorActionPreference = 'Stop'
-$APPNAME = 'MDReader'
-$InstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
-$ws = Join-Path $env:USERPROFILE $APPNAME
-$configPath = Join-Path $InstallDir 'installation.json'
-if (Test-Path -LiteralPath $configPath) {
-    $ws = (Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json).workspace
-}
-if (-not $ws -or -not [IO.Path]::IsPathRooted($ws)) { throw '数据目录配置无效，已取消卸载。' }
-$ws = [IO.Path]::GetFullPath($ws).TrimEnd('\')
-if ($InstallDir -eq [IO.Path]::GetPathRoot($InstallDir).TrimEnd('\') -or
-    $ws -eq $InstallDir -or $ws.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
-    throw '安装目录包含数据或路径不安全，已取消卸载。'
-}
-if ($Purge -and (Test-Path -LiteralPath $configPath)) { throw '自定义数据目录请自行备份后手动清理；卸载程序不会删除它。' }
-
-function Write-Ok($t)   { Write-Host "  [OK] $t" -ForegroundColor Green }
-function Write-Warn2($t){ Write-Host "  [!] $t"  -ForegroundColor Yellow }
-
-Write-Host ""
-Write-Host "  $APPNAME 卸载" -ForegroundColor Cyan
-Write-Host "  ------------------------------" -ForegroundColor DarkGray
-
-# 运行中的程序会把 exe 锁住，先提醒
-$running = Get-CimInstance Win32_Process | Where-Object {
-    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase)
-}
-if ($running) {
-    Write-Warn2 "检测到 $APPNAME 正在运行，请先关闭窗口再卸载。"
-    exit 1
-}
-
-# ------------------------------------------------------------- 桌面快捷方式
-$desktop = [Environment]::GetFolderPath('Desktop')
-if (-not $desktop) { $desktop = Join-Path $env:USERPROFILE 'Desktop' }
-$lnk = Join-Path $desktop "$APPNAME.lnk"
-if ((Test-Path -LiteralPath $lnk) -and
-    ((New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath -eq (Join-Path $InstallDir 'MDReader.exe'))) {
-    Remove-Item -LiteralPath $lnk -Force
-    Write-Ok "已删除桌面快捷方式"
-}
-$startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
-$smLnk = Join-Path $startMenu "$APPNAME.lnk"
-if ((Test-Path -LiteralPath $smLnk) -and
-    ((New-Object -ComObject WScript.Shell).CreateShortcut($smLnk).TargetPath -eq (Join-Path $InstallDir 'MDReader.exe'))) {
-    Remove-Item -LiteralPath $smLnk -Force
-    Write-Ok "已删除开始菜单快捷方式"
-}
-
-# ------------------------------------------------------------------ 程序目录
-if (Test-Path -LiteralPath $InstallDir) {
-    $exe = Join-Path $InstallDir "$APPNAME.exe"
-    if (Test-Path -LiteralPath $exe) {
-        Remove-Item -LiteralPath $InstallDir -Recurse -Force
-        Write-Ok "已删除程序目录: $InstallDir"
-    } else {
-        Write-Warn2 "$InstallDir 里没有 $APPNAME.exe，已跳过（避免误删别的目录）"
+try {
+    if (-not $InstallDir) { $InstallDir = $PSScriptRoot }
+    if ($Purge) { throw '卸载不会删除文档或配置。请备份后自行管理数据目录；不再支持 -Purge。' }
+    if (-not [IO.Path]::IsPathRooted($InstallDir)) { throw '请提供完整的安装目录路径。' }
+    $InstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+    if (-not (Test-Path -LiteralPath $InstallDir -PathType Container)) { throw '安装目录不存在，未执行删除。' }
+    $resolved = (Resolve-Path -LiteralPath $InstallDir).ProviderPath.TrimEnd('\')
+    if ($resolved -ne $InstallDir -or $InstallDir -eq [IO.Path]::GetPathRoot($InstallDir).TrimEnd('\')) {
+        throw '安装路径不安全，已取消卸载。'
     }
-} else {
-    Write-Warn2 "程序目录不存在: $InstallDir"
-}
-
-# --------------------------------------------------------- 注册表（仅本次安装）
-$key = 'HKCU:\Software\Classes\MDReader.md'
-if ((Test-Path "$key\shell\open\command") -and
-    ((Get-Item "$key\shell\open\command").GetValue('') -eq ('"{0}" --open "%1"' -f (Join-Path $InstallDir 'MDReader.exe')))) {
-    Remove-Item -Path $key -Recurse -Force
-    Write-Ok "已清除 .md 打开方式登记"
-}
-
-# ------------------------------------------------------------------ 用户文档
-if ($Purge) {
-    if (Test-Path -LiteralPath $ws) {
-        Write-Host ""
-        Write-Host "  即将删除你的文档目录：$ws" -ForegroundColor Yellow
-        $answer = Read-Host "  确认删除请输入 DELETE"
-        if ($answer -eq 'DELETE') {
-            Remove-Item -LiteralPath $ws -Recurse -Force
-            Write-Ok "已删除文档目录"
-        } else {
-            Write-Warn2 "已取消，文档目录保留"
+    # Refuse junctions/symlinks in the target and its ancestors before recursion.
+    $ancestor = Get-Item -LiteralPath $InstallDir -Force
+    while ($ancestor) {
+        if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '安装路径包含目录链接，已取消卸载。' }
+        $ancestor = $ancestor.Parent
+    }
+    foreach ($required in @('MDReader.exe','main.py','mdreader\core.py','runtime\pythonw.exe')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $required) -PathType Leaf)) {
+            throw "无法确认这是完整的 MDReader 安装，缺少 $required；未执行删除。"
         }
     }
-} else {
-    Write-Host ""
-    Write-Host "  文档目录保留在: $ws" -ForegroundColor Cyan
-    Write-Host "  （如要一并删除，请运行 .\卸载.ps1 -Purge）"
+    $linked = Get-ChildItem -LiteralPath $InstallDir -Recurse -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } | Select-Object -First 1
+    if ($linked) { throw '安装目录内包含文件或目录链接，已取消卸载。' }
+    $ws = Join-Path $env:USERPROFILE 'MDReader'
+    $config = Join-Path $InstallDir 'installation.json'
+    if (Test-Path -LiteralPath $config) { $ws = (Get-Content -LiteralPath $config -Raw -Encoding UTF8 | ConvertFrom-Json).workspace }
+    if (-not $ws -or -not [IO.Path]::IsPathRooted($ws)) { throw '数据目录配置无效，已取消卸载。' }
+    $ws = [IO.Path]::GetFullPath($ws).TrimEnd('\')
+    if ($ws -eq $InstallDir -or $ws.StartsWith($InstallDir+'\',[StringComparison]::OrdinalIgnoreCase) -or $InstallDir.StartsWith($ws+'\',[StringComparison]::OrdinalIgnoreCase)) {
+        throw '安装目录与数据目录重叠，已取消卸载。'
+    }
+    $running = Get-CimInstance Win32_Process | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith($InstallDir+'\',[StringComparison]::OrdinalIgnoreCase)
+    }
+    if ($running) { throw 'MDReader 正在运行。请先保存文档并关闭所有窗口，再卸载。' }
+    Write-Host "即将卸载程序: $InstallDir"
+    Write-Host "文档与配置保留在: $ws"
+    if (-not $Yes -and (Read-Host '确认卸载请输入 YES；直接回车取消') -cne 'YES') {
+        Write-Host '已取消卸载，未作修改。'
+        return
+    }
+    # Only shortcuts pointing at this exact installation belong to this uninstall.
+    $exe = Join-Path $InstallDir 'MDReader.exe'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcuts = @()
+    foreach ($directory in @($ShortcutDir,$StartMenuDir)) {
+        if ($directory -and (Test-Path -LiteralPath $directory)) {
+            foreach ($link in (Get-ChildItem -LiteralPath $directory -Filter '*.lnk' -File)) {
+                if ($shell.CreateShortcut($link.FullName).TargetPath -eq $exe) { $shortcuts += $link.FullName }
+            }
+        }
+    }
+    # Remove only known application items; keep unrelated top-level files.
+    $appItems = @('MDReader.exe','main.py','mdreader','runtime','webui','assets','plugins','docs','tools','tests',
+        'README.md','README.en.md','CONTRIBUTING.md','LICENSE','VERSION.txt','使用说明.md','安装到桌面.ps1',
+        '安装到桌面.cmd','启动 MDReader.bat','卸载.ps1','卸载.cmd','installation.json','MDReader.log','__pycache__')
+    foreach ($name in $appItems) {
+        $item = [IO.Path]::GetFullPath((Join-Path $InstallDir $name))
+        if (-not $item.StartsWith($InstallDir+'\',[StringComparison]::OrdinalIgnoreCase)) { throw '程序文件路径越界。' }
+        if (Test-Path -LiteralPath $item) { Remove-Item -LiteralPath $item -Recurse -Force }
+    }
+    if (@(Get-ChildItem -LiteralPath $InstallDir -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $InstallDir -Force
+    } else {
+        Write-Host "安装目录内的其他文件已保留: $InstallDir"
+    }
+    foreach ($link in $shortcuts) { Remove-Item -LiteralPath $link -Force }
+    $key = 'HKCU:\Software\Classes\MDReader.md'
+    $command = "$key\shell\open\command"
+    if ((Test-Path -LiteralPath $command) -and ((Get-Item -LiteralPath $command).GetValue('') -eq ('"{0}" --open "%1"' -f $exe))) {
+        Remove-Item -LiteralPath $key -Recurse -Force
+        $openWith = 'HKCU:\Software\Classes\.md\OpenWithProgids'
+        if (Test-Path -LiteralPath $openWith) {
+            Remove-ItemProperty -LiteralPath $openWith -Name 'MDReader.md' -ErrorAction SilentlyContinue
+        }
+    }
+    Write-Host '卸载完成。文档与配置已保留；已固定的任务栏图标请自行取消固定。' -ForegroundColor Green
+} catch {
+    Write-Host "卸载失败: $($_.Exception.Message)" -ForegroundColor Red
+    throw
+} finally {
+    if (-not $NoPause) { Read-Host '按 Enter 关闭窗口' | Out-Null }
 }
-
-Write-Host ""
-Write-Host "  卸载完成。" -ForegroundColor Green
-Write-Host ""
