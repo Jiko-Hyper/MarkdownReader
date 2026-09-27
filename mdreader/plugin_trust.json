@@ -11,13 +11,17 @@
     "mdreader.export-pdf": {
       "publisher": "MDReader",
       "versions": {
-        "1.0.2": "7d17930d95c75e08d9bbc200bf9cdc7238210c27e6b9fa5f9859a10c9f06008e"
+        "1.0.2": "7d17930d95c75e08d9bbc200bf9cdc7238210c27e6b9fa5f9859a10c9f06008e",
+        "1.0.3": "be008466b8eced18554fb8fb9e58ab43cf7750aa4ff3aff8bedd6a4bdde82fc0",
+        "1.0.4": "26107740bde76c2307cee3260827adea52a9336c7dd80d704b9fea434056d442"
       }
     },
     "mdreader.export-docx": {
       "publisher": "MDReader",
       "versions": {
-        "1.0.2": "9e56d969346fceae2df6943cbb3d41352dfc2c7f11c26a4b387f3c861d98d087"
+        "1.0.2": "9e56d969346fceae2df6943cbb3d41352dfc2c7f11c26a4b387f3c861d98d087",
+        "1.0.3": "7af8accbdf0639f97b422467ff8629123ef5bc0c2404c41bbd3c0ce752e30c28",
+        "1.0.4": "a7351c904e8533784b2573f1630ff79c493137321052eee3a16bd8a9859c5f31"
       }
     },
     "mdreader.document-convert": {

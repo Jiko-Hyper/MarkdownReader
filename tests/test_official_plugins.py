@@ -61,6 +61,21 @@ class OfficialPluginTests(unittest.TestCase):
                 self.assertIn(b"/Subtype /Image", target.read_bytes())
         self.assertNotIn('width=240', self.doc.read_text(encoding="utf-8"), "导出不得修改源文件")
 
+    def test_a_wide_image_at_the_end_of_a_chinese_paragraph_still_exports(self):
+        """A01 发现：图片片段落在 CJK 折行的行尾时 ReportLab 抛 ``ord("")``，整份导不出来。"""
+        markdown = ("# 图文\n\n" + "这是一段中文说明文字。" * 12 + "\n\n"
+                    + '![大图](%s "width=700")\n' % self.picture.name)
+        commands = self.ws.plugins.commands()
+        for ext in ("pdf", "docx"):
+            command = next(c for c in commands if c.get("extension") == ext)
+            target = Path(self.temp.name, "图文." + ext)
+            result = self.api.post("/api/plugins/export", {"command": command["command"],
+                "doc": str(self.doc), "revision": self.info["revision"], "markdown": markdown,
+                "source": "buffer", "dest": str(target), "wait": 120})
+            self.assertEqual(result.get("path"), str(target), result)
+            if ext == "pdf":
+                self.assertIn(b"/Subtype /Image", target.read_bytes())
+
     def test_missing_image_and_destination_conflict_keep_existing_output(self):
         commands = self.ws.plugins.commands()
         cmd = next(c for c in commands if c.get("extension") == "pdf")
@@ -312,6 +327,68 @@ class FormulaExportTests(unittest.TestCase):
             xml = archive.read("word/document.xml").decode("utf-8")
         self.assertIn("$5 与 $6 元", xml)
         self.assertEqual(result["warnings"], [], "金额文本不该被当成公式而报降级")
+
+    def test_a_formula_with_markdown_escapes_still_becomes_an_image(self):
+        """A01 发现：``\\,`` 被 CommonMark 反转义成 ``,``，查表落空，公式静默留在正文里。"""
+        markdown = "# 细空格\n\n关系式 $\\int_{0}^{1} f(t)\\,dt = 1$ 之后还有文字。\n"
+        target, _result = self.export(markdown, "docx")
+        with zipfile.ZipFile(target) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertIn("w:drawing", xml, "含 \\, 的公式也要以图片嵌入")
+        visible = "".join(re.findall(r"<w:t[^>]*>([^<]*)</w:t>", xml))
+        self.assertNotIn("\\int", visible, "公式已转成图片，正文里不该还留着源码")
+        self.assertIn("之后还有文字", visible, "公式前后的正文都要保留")
+        pdf_target, _result = self.export(markdown, "pdf")
+        self.assertIn(b"/Subtype /Image", pdf_target.read_bytes())
+        self.assertNotIn("\\int", self.pdf_text(pdf_target))
+        self.assertIn("之后还有文字", self.pdf_text(pdf_target))
+
+    PIECE = ("\\sum_{i=1}^{n} a_{i} x_{i}^{2} + \\sum_{j=1}^{m} b_{j} y_{j}^{2} = "
+             "\\int_{0}^{1} f(t)\\,dt + \\frac{\\alpha+\\beta}{\\gamma+\\delta}")
+
+    def wide_markdown(self):
+        """一行里放三段求和：渲染出来约 718pt，比 A4 正文宽度（499pt）宽得多。"""
+        body = " + ".join([self.PIECE] * 3)
+        return "# 宽公式\n\n一行内引用 $%s$ 结束。\n" % body
+
+    def pdf_image_bounds(self, target):
+        try:
+            import pypdfium2 as pdfium
+        except ImportError:                      # pragma: no cover - 环境缺依赖时跳过
+            self.skipTest("没有 pypdfium2，跳过页面几何核对")
+        document = pdfium.PdfDocument(str(target))
+        try:
+            size = document[0].get_size()
+            boxes = []
+            for index in range(len(document)):
+                page = document[index]
+                boxes += [(index + 1, obj.get_bounds()) for obj in page.get_objects()
+                          if obj.type == pdfium.raw.FPDF_PAGEOBJ_IMAGE]
+            return size, boxes
+        finally:
+            document.close()
+
+    def test_a_too_wide_formula_is_scaled_into_the_margins_instead_of_failing(self):
+        """A01 发现：过宽公式压出版心，Word 超宽、PDF 直接导不出来（ReportLab 报错）。"""
+        markdown = self.wide_markdown()
+        target, result = self.export(markdown, "pdf")
+        self.assertTrue(any("缩小" in message for message in result["warnings"]),
+                        "缩小过宽公式必须给出可见提示：%s" % result["warnings"])
+        (page_width, _height), boxes = self.pdf_image_bounds(target)
+        self.assertTrue(boxes, "公式应当以图片嵌入")
+        for page, (left, _bottom, right, _top) in boxes:
+            self.assertLessEqual(right, page_width - 48 + 1,
+                                 "第 %d 页公式越出右边距：%r" % (page, (left, right)))
+            self.assertGreaterEqual(left, 48 - 1, "第 %d 页公式越出左边距" % page)
+        docx_target, docx_result = self.export(markdown, "docx")
+        self.assertTrue(any("缩小" in message for message in docx_result["warnings"]),
+                        docx_result["warnings"])
+        with zipfile.ZipFile(docx_target) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8")
+        widths = [int(value) / 12700 for value in re.findall(r'<wp:extent cx="(\d+)"', xml)]
+        self.assertTrue(widths, "Word 里应当有公式图片")
+        for value in widths:
+            self.assertLessEqual(value, 6.9 * 72 + 1, "Word 里的公式超出正文宽度：%s" % value)
 
     def test_the_export_does_not_change_the_source_document(self):
         doc = Path(self.temp.name, "原样.md")

@@ -1,5 +1,5 @@
 """Themed image width controls; source images are never destructively resized."""
-def run_job(owner, action):
+def run_job(owner, action, cancel=None):
     """Keep Tk painting and scrolling while a worker waits for the plugin process."""
     import queue
     import threading
@@ -11,6 +11,29 @@ def run_job(owner, action):
     gc.disable()  # Tk objects must be collected on the UI thread, never by the worker.
     results = queue.Queue()
     done = owner._tk.BooleanVar(owner.root, False)
+    dialog = None
+    if cancel is not None:
+        tk, pal = owner._tk, owner.pal
+        dialog = tk.Toplevel(owner.root)
+        dialog.withdraw()
+        dialog.title('正在导出')
+        dialog.transient(owner.root)
+        dialog.configure(bg=pal['bg'])
+        tk.Label(dialog, text='正在生成文件，可取消本次导出', bg=pal['bg'], fg=pal['fg']).pack(padx=28, pady=20)
+        def request_cancel():
+            cancel.set()
+            button.configure(text='正在取消…', state='disabled')
+        button = tk.Button(dialog, text='取消导出', command=request_cancel,
+                           bg=pal['button'], fg=pal['fg'], relief='flat', padx=16, pady=8)
+        button.pack(pady=(0, 20))
+        dialog.protocol('WM_DELETE_WINDOW', request_cancel)
+        dialog.bind('<Escape>', lambda _event: request_cancel())
+        dialog.update_idletasks()
+        dialog.geometry('+%d+%d' % (owner.root.winfo_rootx() + (owner.root.winfo_width()-dialog.winfo_reqwidth())//2,
+                                  owner.root.winfo_rooty() + (owner.root.winfo_height()-dialog.winfo_reqheight())//2))
+        from .display import style_titlebar
+        style_titlebar(dialog, owner.dark, pal['bg'], pal['fg'])
+        dialog.deiconify()
     def work():
         try:
             results.put((True, action()))
@@ -30,9 +53,23 @@ def run_job(owner, action):
             raise result
         return result
     finally:
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
         owner._plugin_busy = False
         if collect:
             gc.enable()
+
+
+def export_with_cancel(bridge, payload, cancel):
+    """Only the host commits results; a cancelled task never reaches that step."""
+    result = bridge.post('/api/plugins/export', dict(payload, background=True))
+    while result.get('pending'):
+        task_id = result['task']['id']
+        if cancel.wait(0.05):
+            bridge.post('/api/plugins/task/cancel', {'id': task_id})
+            return {'cancelled': True}
+        result = bridge.post('/api/plugins/export', {'task': task_id})
+    return result
 
 
 def choose_width(owner, initial=720, title='调整图片大小'):

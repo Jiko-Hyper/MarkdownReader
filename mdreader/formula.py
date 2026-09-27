@@ -31,7 +31,7 @@ import threading
 import zlib
 from ctypes import wintypes
 
-RENDERER_VERSION = "1"
+RENDERER_VERSION = "2"
 
 #: 公式基础字号（CSS 像素）与跟随正文缩放的上下限。
 DEFAULT_SIZE = 16
@@ -1032,27 +1032,20 @@ def _row_box(nodes, size: float) -> Box:
         parts.append((text, box, before if parts else 0.0))
     if not parts:
         return Box(0.0, 0.0, 0.0)
-    width = sum(box.width + before for _t, box, before in parts)
     height = max(box.height for _t, box, _b in parts)
     depth = max(box.depth for _t, box, _b in parts)
     ops, x = [], 0.0
-    for index, (_text, box, before) in enumerate(parts):
-        x += before
+    for index, (text, box, before) in enumerate(parts):
+        if index:
+            previous = parts[index - 1][0]
+            after = (size * 0.28 if previous in _RELATIONS else
+                     size * 0.22 if previous in _BINARIES else
+                     size * 0.17 if previous in (",", ";") else 0.0)
+            # One shared boundary gap, counted identically for drawing and width.
+            x += max(before, after)
         ops.extend(box.shifted(x, 0.0).ops)
         x += box.width
-        if index + 1 < len(parts):
-            after = 0.0
-            text = parts[index][0]
-            if text in _RELATIONS:
-                after = size * 0.28
-            elif text in _BINARIES:
-                after = size * 0.22
-            elif text in (",", ";"):
-                after = size * 0.17
-            x += after - parts[index + 1][2]
-            if x < 0:
-                x = 0
-    return Box(width, height, depth, ops)
+    return Box(max(0.0, x), height, depth, ops)
 
 
 def _layout(node, size: float) -> Box:
@@ -1129,18 +1122,25 @@ def _script_box(node, size: float) -> Box:
     ops = list(base.ops)
     height, depth = base.height, base.depth
     stacked = superscript is not None and subscript is not None
+    # Position script baselines, not their top/bottom edges. Adding the entire
+    # script ascent to its drop puts even a simple subscript below the base.
+    rise = max(size * 0.5, base.height * 0.7)
+    drop = max(size * 0.28, base.depth + size * 0.1)
+    if stacked:
+        gap = size * 0.16
+        drop = max(drop, superscript.depth + subscript.height + gap - rise)
     if superscript is not None:
-        rise = size * (0.62 if stacked else 0.46)
         offset = base.width + size * 0.06
-        ops.extend(superscript.shifted(offset, -(rise + superscript.depth)).ops)
+        ops.extend(superscript.shifted(offset, -rise).ops)
         width = max(width, offset + superscript.width)
-        height = max(height, rise + superscript.height + superscript.depth)
+        height = max(height, rise + superscript.height)
+        depth = max(depth, superscript.depth - rise)
     if subscript is not None:
-        drop = size * (0.18 if not stacked else 0.15)
         offset = base.width + size * 0.06
-        ops.extend(subscript.shifted(offset, drop + subscript.height).ops)
+        ops.extend(subscript.shifted(offset, drop).ops)
         width = max(width, offset + subscript.width)
-        depth = max(depth, drop + subscript.height + subscript.depth)
+        height = max(height, subscript.height - drop)
+        depth = max(depth, drop + subscript.depth)
     return Box(width, height, depth, ops)
 
 
@@ -1419,4 +1419,3 @@ def cached(directory: str, tex: str, *, size: float = DEFAULT_SIZE, display: boo
             path = ""
     return {"ok": True, "path": path, "key": key, "width": result["width"],
             "height": result["height"], "cached": False, "png": result["png"]}
-

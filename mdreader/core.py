@@ -37,7 +37,7 @@ from . import tables as TB
 from .storage import atomic_write, is_within, safe_join
 
 APP_NAME = "MDReader"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 WS_DIRNAME = ".mdreader"
 PROJECT_FILE = "project.json"
 DOC_EXTS = (".md", ".markdown", ".mdown", ".mkd", ".txt")
@@ -1704,6 +1704,15 @@ class Api:
     def _plugin_export(self, payload: dict) -> dict:
         """导出：核心管快照、预检、覆盖确认与最终替换，插件只产临时文件。"""
         ws = self.ws
+        if payload.get('task'):
+            task = ws.plugins.tasks.get(str(payload['task']))
+            context = getattr(task, '_export_context', None)
+            if context is None:
+                raise PL.PluginError('这不是可继续的导出任务')
+            outcome = self._plugin_wait(task, 0.01)
+            if outcome['pending']:
+                return outcome
+            return self._finish_plugin_export(task, outcome, context)
         plan = self._export_plan(payload)
         command = plan["command"]
         if command is None:
@@ -1738,9 +1747,18 @@ class Api:
             command["command"], doc=snapshot["identity"], revision=snapshot["revision"],
             entry=payload.get("entry") or self.mode, markdown=snapshot["markdown"],
             options=options, input_files=files)
+        context = (dest, target_before, report, plan['source'], command)
+        if payload.get('background'):
+            task._export_context = context
+            return {'pending': True, 'task': task.view()}
         outcome = self._plugin_wait(task, payload.get("wait") or 120)
         if outcome["pending"]:
             return {"pending": True, "task": outcome["task"]}
+        return self._finish_plugin_export(task, outcome, context)
+
+    def _finish_plugin_export(self, task, outcome, context):
+        dest, target_before, report, source, command = context
+        ws = self.ws
         # 确认之后目标要是被外部换过，就重新确认，不覆盖刚出现的新版本
         if D.revision(dest) != target_before:
             return {"ok": False, "conflict": True, "revision": D.revision(dest), "path": dest,
@@ -1750,7 +1768,7 @@ class Api:
         return {"pending": False, "task": outcome["task"], "path": result["path"],
                 "bytes": result["bytes"], "extension": result["extension"],
                 "media_type": result["media_type"], "warnings": result["warnings"],
-                "preflight": report, "source": plan["source"],
+                "preflight": report, "source": source,
                 "command": command["command"], "plugin": command["plugin"]}
 
     def _local_file(self, q: dict):
@@ -2116,6 +2134,10 @@ class Api:
             return {"ok": True, "result": result, **ws.plugins.status()}
 
         if path == "/api/plugins/task/cancel":
+            task = ws.plugins.tasks.get(payload.get('id') or '')
+            # Completed background exports still have not been committed.
+            if hasattr(task, '_export_context'):
+                del task._export_context
             return {"ok": True, "task": ws.plugins.tasks.cancel(
                 payload.get("id") or "", payload.get("reason") or "用户取消")}
 

@@ -124,22 +124,28 @@ class NavigationUiTests(unittest.TestCase):
         w.toggle_mode()
         assert_position(preview_y)
 
-    def test_actual_keys_do_not_insert_newline(self):
+    def test_actual_keys_do_not_insert_shortcut_text(self):
         w = self.w
         w.root.deiconify()
         w.root.update()
         self.select_last('重点')
         w.text.focus_force()
         w.root.update()
-        w.text.event_generate('<Control-m>')
+        w.text.event_generate('<Shift-M>')
         w.root.update()
         self.assertEqual(w.mode, 'source')
         before = w.get_text()
+        self.assertFalse(w.text.bind('<Control-m>'))
+        with patch.object(w, 'format_selection') as formula:
+            w.text.event_generate('<Control-Shift-M>')
+            w.root.update()
+            formula.assert_called_once_with('formula_inline')
+        self.assertEqual(w.mode, 'source')
         for key, expected in [('<Control-End>', 'end-1c'), ('<Control-Home>', '1.0')]:
             w.text.event_generate(key)
             w.root.update()
             self.assertEqual(w.text.index('insert'), w.text.index(expected))
-        w.text.event_generate('<Control-m>')
+        w.text.event_generate('<Shift-M>')
         w.root.update()
         self.assertEqual(w.mode, 'preview')
         self.assertEqual(w.source, before)

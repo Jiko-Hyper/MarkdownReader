@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT))
 from mdreader.plugins import build_package
 
 VERSION = "1.0.2"
+EXPORT_VERSION = "1.0.4"
 names = {"image-insert": "图片插入与缩放", "export-pdf": "Markdown 转 PDF", "export-docx": "Markdown 转 Word"}
 packages = {"image-insert": ["PIL"], "export-pdf": ["PIL", "reportlab", "charset_normalizer", "markdown_it", "mdurl"],
             "export-docx": ["PIL", "docx", "lxml", "typing_extensions.py", "markdown_it", "mdurl"]}
@@ -19,6 +20,7 @@ outdir.mkdir(parents=True, exist_ok=True)
 for kind, name in names.items():
     pid = "mdreader." + kind
     image = kind == "image-insert"
+    version = VERSION if image else EXPORT_VERSION
     capability = "editor.image_insert" if image else "export.format"
     command = {"id": "insert" if image else "export", "title": name,
                "capability": capability, "method": "insert_image" if image else "export_document"}
@@ -26,7 +28,7 @@ for kind, name in names.items():
         ext = kind.split("-")[1]
         command.update(format=ext, extension=ext, magic="25504446" if ext == "pdf" else "504b0304",
                        media_type="application/pdf" if ext == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    manifest = {"id": pid, "name": name, "version": VERSION, "api_version": "1",
+    manifest = {"id": pid, "name": name, "version": version, "api_version": "1",
                 "app_version_range": ">=0.2.8", "entrypoint": "plugin.py", "capabilities": [capability],
                 "commands": [command], "dependencies": [], "publisher": "MDReader",
                 "description": "离线插件，适用于 Windows x64 / Python 3.12；依赖随包提供。"}
@@ -46,10 +48,11 @@ for kind, name in names.items():
         if file.is_file() and any(p.endswith(".dist-info") for p in file.parts) and (
                 "license" in file.name.lower() or "copying" in file.name.lower()):
             extra["licenses/" + file.relative_to(ROOT / "plugins/dependencies").as_posix()] = file.read_bytes()
-    target = outdir / (pid + "-" + VERSION + ".zip")
+    target = outdir / (pid + "-" + version + ".zip")
     build_package(str(source), str(target), extra=extra)
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    trust["plugins"][pid] = {"publisher": "MDReader", "versions": {VERSION: digest}}
+    entry = trust["plugins"].setdefault(pid, {"publisher": "MDReader", "versions": {}})
+    entry["versions"][version] = digest
     print(target.name, target.stat().st_size, digest)
 trust_path.write_text(json.dumps(trust, ensure_ascii=False, indent=2), encoding="utf-8")
 import runpy

@@ -1479,6 +1479,33 @@ class PluginDesktopTests(PluginTestCase):
             self.assertEqual(stream.read(), "原始内容")
         self.assertIn("未改动", win.lbl_status.cget("text"))
 
+    def test_export_cancel_button_preserves_the_existing_target(self):
+        win = self.window()
+        self.enable(SAMPLE_A)
+        self.open_document()
+        command = win.plugin_commands(core.PL.CAP_EXPORT)[0]
+        dest = write_text(os.path.join(self.base, 'cancel.samplea'), 'original')
+        clicked = []
+        def click_cancel():
+            def search(widget):
+                for child in widget.winfo_children():
+                    if child.winfo_class() == 'Button' and child.cget('text') == '取消导出':
+                        child.invoke()
+                        clicked.append(True)
+                        return True
+                    if search(child):
+                        return True
+                return False
+            if not search(win.root):
+                win.root.after(5, click_cancel)
+        win.root.after(5, click_cancel)
+        self.assertFalse(win._plugin_export_call({'command': command['command'],
+            **win._plugin_document_context(), 'dest': dest, 'overwrite': True, 'confirm': True}, dest))
+        self.assertTrue(clicked)
+        self.assertIn('已取消导出', win.lbl_status.cget('text'))
+        with open(dest, encoding='utf-8') as stream:
+            self.assertEqual(stream.read(), 'original')
+
     def test_plugin_dialog_lists_plugins_and_toggles_them(self):
         from mdreader.plugin_ui import PluginDialog
         win = self.window()

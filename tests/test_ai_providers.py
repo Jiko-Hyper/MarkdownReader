@@ -48,7 +48,11 @@ class FakeProvider(BaseHTTPRequestHandler):
         else:
             data = {'choices': [{'message': {'content': 'DeepSeek 回复'}, 'finish_reason': 'stop'}]}
         if body and '只返回一个 JSON 对象' in json.dumps(body, ensure_ascii=False):
-            content = json.dumps({'text': 'DeepSeek 回复', 'document': getattr(self.server, 'document', None)}, ensure_ascii=False)
+            if '选区修改助手' in json.dumps(body, ensure_ascii=False):
+                proposal = {'text': '选区建议', 'replacement': getattr(self.server, 'replacement', None)}
+            else:
+                proposal = {'text': 'DeepSeek 回复', 'document': getattr(self.server, 'document', None)}
+            content = json.dumps(proposal, ensure_ascii=False)
             if 'choices' in data:
                 data['choices'][0]['message']['content'] = content
             elif 'output' in data:
@@ -148,6 +152,55 @@ class ProviderTests(unittest.TestCase):
             with patch.object(self.store, '_generate', return_value={'choices': [{'message': {'content': content}, 'finish_reason': reason}]}):
                 with self.assertRaisesRegex(ValueError, '未更改文档'):
                     self.store.chat(payload)
+
+    def test_selection_mode_sends_only_the_selection_and_returns_a_replacement(self):
+        self.save()
+        self.server.replacement = '改好的这一段'
+        document = '开头段落。\n\n要改的这一段文字。\n\n结尾段落。'
+        start = document.index('要改的这一段')
+        result = self.store.chat({'provider': 'deepseek',
+            'messages': [{'role': 'user', 'content': '（选区修改）润色'}],
+            'selection': {'outgoing': document[start:start + 9], 'instruction': '润色',
+                          'scope': '仅选区 9 字（第 %d–%d 字符）' % (start + 1, start + 9)}})
+        self.assertEqual(result['replacement'], '改好的这一段')
+        self.assertTrue(result['selection'])
+        self.assertIsNone(result['document'])
+        sent = json.dumps(self.server.calls[-1][2], ensure_ascii=False)
+        self.assertIn('要改的这一段文字。', sent, '选中的文字必须发给模型')
+        self.assertNotIn('开头段落', sent, '默认不能把选区外的文字发出去')
+        self.assertNotIn('结尾段落', sent)
+        self.assertIn('仅选区 9 字', sent, '发送范围要写清楚，用户才知道发出去了什么')
+
+    def test_selection_failures_never_become_applicable_text(self):
+        self.save()
+        payload = {'provider': 'deepseek', 'messages': [{'role': 'user', 'content': '（选区修改）润色'}],
+                   'selection': {'outgoing': '选中的文字', 'instruction': '润色', 'scope': '仅选区 5 字（第 1–5 字符）'}}
+        cases = [('不是 JSON', 'stop', '未更改文档'),
+                 ('{"text":"说明","replacement":"截断的替换"}', 'length', '未完整生成'),
+                 ('{"text":"说明","replacement":"   "}', 'stop', '没有返回可替换的文字'),
+                 ('{"text":"说明","replacement":42}', 'stop', '未更改文档'),
+                 ('{"text":"说明","document":"整篇"}', 'stop', '未更改文档')]
+        for content, reason, message in cases:
+            with self.subTest(content=content):
+                reply = {'choices': [{'message': {'content': content}, 'finish_reason': reason}]}
+                with patch.object(self.store, '_generate', return_value=reply):
+                    with self.assertRaisesRegex(ValueError, message):
+                        self.store.chat(payload)
+        with patch.object(self.store, '_generate', return_value={'choices': [{'message': {'content':
+                '{"text":"说明","replacement":null}'}, 'finish_reason': 'stop'}]}):
+            self.assertIsNone(self.store.chat(payload)['replacement'], 'null 表示没有改动可用，不是空正文')
+
+    def test_selection_requests_are_validated_before_any_network_call(self):
+        self.save()
+        payload = {'provider': 'deepseek', 'messages': [{'role': 'user', 'content': '（选区修改）润色'}]}
+        for selection in ('不是字典', {}, {'outgoing': '', 'instruction': '润色', 'scope': '仅选区'},
+                          {'outgoing': '文字', 'instruction': '   ', 'scope': '仅选区'},
+                          {'outgoing': '文字', 'instruction': '润色', 'scope': ' '},
+                          {'outgoing': '文字', 'instruction': '润色'}):
+            with self.subTest(selection=selection):
+                with self.assertRaises(ValueError):
+                    self.store.chat(dict(payload, selection=selection))
+        self.assertEqual(self.server.calls, [], '无效选区请求不该发出网络请求')
 
     def test_arbitrary_models_and_compatible_protocol_without_vendor_parameters(self):
         self.save('openai')
@@ -334,6 +387,105 @@ class ProviderTests(unittest.TestCase):
         window.root.update()
         self.assertEqual(window.get_text(), original)
         dialog.close()
+
+    def test_native_selection_edit_changes_only_the_selection_with_one_undo(self):
+        """B01：选中哪里改哪里；过期结果不能覆盖正文，应用后不自动保存。"""
+        ws, app_server, port = core.serve(self.temp.name)
+        self.addCleanup(app_server.server_close)
+        with patch.object(winui.MarkdownWindow, 'enable_file_drop'):
+            window = winui.MarkdownWindow(self.temp.name, connection_api=core.api_of(app_server))
+        window.root.withdraw()
+        def cleanup():
+            for timer in window.root.tk.call('after', 'info'):
+                window.root.after_cancel(timer)
+            window.root.destroy()
+        self.addCleanup(cleanup)
+        file = Path(self.temp.name, '选区.md')
+        original = '# 标题\n\n第一段保持原样。\n\n第二段要被改。\n\n第三段保持原样。\n'
+        file.write_text(original, encoding='utf-8')
+        window.open_local_files([str(file)])
+        window.show_ai_connection()
+        window.show_source()
+        dialog = window._assistant_dialog
+        dialog.base.set(self.base)
+        dialog.key.set('secret-test-key')
+        self.server.replacement = '第二段已经被改。'
+        start = original.index('第二段要被改。')
+        with patch.object(dialog, 'set_busy', side_effect=dialog.set_busy):
+            dialog.request_selection('polish')       # 没有选中文字：先给出明确指引
+        self.assertIn('选中', dialog.status_label.cget('text'))
+        self.assertIsNone(dialog.selections['deepseek'])
+        window.editor.tag_add('sel', '1.0+%dc' % start, '1.0+%dc' % (start + len('第二段要被改。')))
+        dialog.request_selection('polish')
+        deadline = time.monotonic() + 5
+        while dialog.busy and time.monotonic() < deadline:
+            window.root.update()
+            time.sleep(0.02)
+        self.assertFalse(dialog.busy)
+        before, replacement, instruction = dialog.selections['deepseek']
+        self.assertEqual(replacement, '第二段已经被改。')
+        self.assertEqual(instruction, '把选中的文字润色：更通顺、更书面，不改动事实与结构。')
+        self.assertEqual(before['start'], start)
+        self.assertEqual(before['end'], start + len('第二段要被改。'))
+        sent = json.dumps(self.server.calls[-1][2], ensure_ascii=False)
+        self.assertIn('第二段要被改。', sent)
+        self.assertNotIn('第一段保持原样', sent, '默认只发选区，不发选区外的正文')
+        self.assertIn('仅选区', sent)
+        with self.assertRaisesRegex(ValueError, '切换'):
+            dialog.apply_selection({'tab': {}, 'text': original, 'start': start,
+                                    'end': start + 7}, replacement)
+        with self.assertRaisesRegex(ValueError, '变化'):
+            dialog.apply_selection({'tab': window.active_tab, 'text': '过时正文', 'start': 0,
+                                    'end': 2}, replacement)
+        self.assertEqual(window.get_text(), original, '过期结果不能改动正文')
+        dialog.cancel_selection_proposal()           # 取消不改变正文
+        self.assertIsNone(dialog.selections['deepseek'])
+        self.assertEqual(window.get_text(), original)
+        dialog.request_selection('shorten')
+        deadline = time.monotonic() + 5
+        while dialog.busy and time.monotonic() < deadline:
+            window.root.update()
+            time.sleep(0.02)
+        dialog.apply_selection_proposal()
+        expected = original[:start] + replacement + original[start + len('第二段要被改。'):]
+        self.assertEqual(window.get_text(), expected)
+        self.assertEqual(file.read_text(encoding='utf-8'), original, '应用后不得自动写入文件')
+        self.assertIsNone(dialog.selections['deepseek'])
+        window.editor.edit_undo()
+        window.root.update()
+        self.assertEqual(window.get_text(), original, '一次应用对应一次撤销')
+        dialog.close()
+
+    def test_native_selection_from_preview_maps_back_to_the_source_range(self):
+        """阅读时在预览里选中一段，也能精确落到源码范围（复用 Ctrl+M 的同一套映射）。"""
+        ws, app_server, port = core.serve(self.temp.name)
+        self.addCleanup(app_server.server_close)
+        with patch.object(winui.MarkdownWindow, 'enable_file_drop'):
+            window = winui.MarkdownWindow(self.temp.name, connection_api=core.api_of(app_server))
+        window.root.withdraw()
+        def cleanup():
+            for timer in window.root.tk.call('after', 'info'):
+                window.root.after_cancel(timer)
+            window.root.destroy()
+        self.addCleanup(cleanup)
+        file = Path(self.temp.name, '预览选区.md')
+        original = '# 标题\n\n第一段保持原样。\n\n第二段要被改。\n\n第三段保持原样。\n'
+        file.write_text(original, encoding='utf-8')
+        window.open_local_files([str(file)])
+        self.assertEqual(window.mode, 'preview', '打开文档先进入阅读视图')
+        window.show_ai_connection()
+        window.root.update()
+        from mdreader.navigation import widget_index, widget_text
+        rendered = widget_text(window.preview)
+        phrase = '第二段要被改。'
+        at = rendered.index(phrase)
+        window.preview.tag_add('sel', widget_index(window.preview, rendered, at),
+                               widget_index(window.preview, rendered, at + len(phrase)))
+        selection = window._assistant_dialog.get_selection()
+        self.assertEqual(selection['text'][selection['start']:selection['end']], phrase)
+        self.assertEqual(selection['text'], original)
+        self.assertEqual(window.mode, 'source', '取选区时切到源码，选区落在同一段文字上')
+        window._assistant_dialog.close()
 
     def test_closing_during_request_releases_all_ui_references_on_main_thread(self):
         root = tk.Tk()

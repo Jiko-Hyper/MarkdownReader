@@ -30,6 +30,7 @@ import unicodedata
 from . import core
 from . import formatting as FM
 from . import media as MD
+from . import selection as SEL
 from . import tables as TB
 from .document_ui import DocumentActions
 
@@ -951,7 +952,7 @@ SHORTCUTS = (
     ("Ctrl+Tab", "切换标签"),
     ("Ctrl+E", "预览 / 源码"),
     ("Ctrl+F", "搜索文章：高亮全部匹配，循环前后查找与首尾直达"),
-    ("Ctrl+M", "正文：切换预览 / 源码并定位选中文字"),
+    ("Shift+M", "正文：切换预览 / 源码并定位选中文字"),
     ("Ctrl+Home", "正文：光标移到文章第一行"),
     ("Ctrl+End", "正文：光标移到文章最后一行"),
     ("Ctrl+B", "显示 / 隐藏侧栏"),
@@ -2450,6 +2451,8 @@ class MarkdownWindow(DocumentActions):
         if self.url:
             self._tool_button("\U0001f310 浏览器视图", self.open_browser)
         self.btn_ai = self._tool_button("AI 接入", self.show_ai_connection)
+        from .export_ui import show_menu
+        self.btn_export = self._tool_button("导出 Word/PDF", lambda: show_menu(self))
         self.btn_more = self._tool_button("\u22ef 更多", self.show_more_menu)
 
         # -- 表格与常用格式（F04）-----------------------------------------
@@ -2806,6 +2809,42 @@ class MarkdownWindow(DocumentActions):
             editor.edit_separator()
         def snapshot():
             return {'tab': self.active_tab, 'text': document()}
+        def selection():
+            """当前选区：文档身份 + 正文版本 + 准确范围（B01 只用这三个定位）。"""
+            if not self.active_tab:
+                raise ValueError('没有打开的文档，请先打开文档。')
+            if self.composing():
+                raise ValueError('请先完成输入法输入，再使用选区修改。')
+            mapped = self._preview_selection_offsets() if self.mode != 'source' else None
+            editor, text = self.editor_context()
+            if editor is None:
+                raise ValueError('没有打开的文档。')
+            start, end = mapped if mapped is not None else self._selection_offsets(editor)
+            try:
+                SEL.require_range(text, start, end)
+            except SEL.SelectionError as exc:
+                raise ValueError(str(exc)) from None
+            return {'tab': self.active_tab, 'text': text, 'start': start, 'end': end}
+        def apply_selection(before, replacement):
+            """只替换目标范围：范围外一个字都不动，整段替换只占一次撤销。"""
+            preview = self.mode != 'source'
+            editor, current = self.editor_context()
+            if editor is None:
+                raise ValueError('没有打开的文档。')
+            reason = SEL.stale_reason(before, self.active_tab, current)
+            if reason:
+                raise ValueError(reason)
+            if self.composing():
+                raise ValueError('请先完成输入法输入。')
+            try:
+                text, start, end = SEL.replace_range(current, before['start'], before['end'], replacement)
+            except SEL.SelectionError as exc:
+                raise ValueError(str(exc)) from None
+            self._apply_editor_result(editor, {'text': text, 'start': start, 'end': end})
+            editor.edit_modified(True)
+            self.on_modified()
+            if preview:
+                self.toggle_mode()
         def apply_edit(before, text):
             if self.active_tab is not before['tab']:
                 raise ValueError('当前文档已切换，请回到原文档后再应用。')
@@ -2831,7 +2870,8 @@ class MarkdownWindow(DocumentActions):
         try:
             self._assistant_dialog = AssistantDialog(self.root, self.connection_api.providers, self.pal,
                                                        get_document=document, insert_reply=insert,
-                                                       get_snapshot=snapshot, apply_edit=apply_edit)
+                                                       get_snapshot=snapshot, apply_edit=apply_edit,
+                                                       get_selection=selection, apply_selection=apply_selection)
         except (ValueError, OSError) as exc:
             self.notice(str(exc), error=True)
 
@@ -2987,6 +3027,25 @@ class MarkdownWindow(DocumentActions):
         if self.mode != "source":
             self.show_source()
         return editor, editor.get("1.0", "end-1c")
+
+    def _preview_selection_offsets(self):
+        """预览里选中的文字映射回源码偏移；没有预览选区时返回 None。
+
+        阅读位置在预览里更自然，映射用的是 Shift+M 定位的同一套算法；映射结果会
+        在发送前显示给用户核对，映射不准时用户能立刻看出来。
+        """
+        from .navigation import map_selection, widget_text
+        try:
+            ranges = self.preview.tag_ranges("sel")
+        except Exception:
+            return None
+        if len(ranges) != 2:
+            return None
+        rendered = widget_text(self.preview)
+        start = len(widget_text(self.preview, ranges[0]))
+        end = len(widget_text(self.preview, ranges[1]))
+        first, last = map_selection(rendered, self.get_text(), start, end)
+        return (first, last) if first != last else None
 
     def format_selection(self, action: str, **options) -> bool:
         """工具栏动作：改的是缓冲区，不改磁盘，一次动作一次撤销。"""
@@ -4475,7 +4534,8 @@ class MarkdownWindow(DocumentActions):
         if not dest:
             return
         self.stash_tab()
-        payload = {"command": command["command"], "dest": dest, "entry": "desktop", "wait": 180}
+        payload = {"command": command["command"], "dest": dest, "entry": "desktop", "wait": 180,
+                   "display_name": os.path.basename(name) or os.path.basename(context['doc'])}
         payload.update(context)
         if self.dirty:
             payload["markdown"] = self.source      # 未保存时告诉宿主“缓冲区与磁盘不一致”
@@ -4521,12 +4581,17 @@ class MarkdownWindow(DocumentActions):
     def _plugin_export_call(self, payload: dict, dest: str) -> bool:
         from tkinter import messagebox
         try:
-            from .media_ui import run_job
+            import threading
+            from .media_ui import run_job, export_with_cancel
             bridge = self.plugin_bridge()
+            cancel = threading.Event()
             self.notice("正在导出，仍可滚动和阅读文章…")
-            result = run_job(self, lambda: bridge.post("/api/plugins/export", payload))
+            result = run_job(self, lambda: export_with_cancel(bridge, payload, cancel), cancel=cancel)
         except Exception as exc:
             self.notice("导出失败，原目标未改动：%s" % _s(exc), error=True)
+            return False
+        if result.get('cancelled'):
+            self.notice('已取消导出，原目标未改动')
             return False
         if result.get("blocked"):
             ExportReportDialog(self.root, self.pal, self.ui_scale, dest=dest,
@@ -4554,6 +4619,8 @@ class MarkdownWindow(DocumentActions):
         warnings = result.get("warnings") or []
         self.notice("已导出：%s%s" % (result["path"],
                                     ("（%d 条提示）" % len(warnings)) if warnings else ""))
+        from .export_ui import completed
+        completed(self, result['path'], payload.get('display_name') or os.path.basename(payload.get('doc', '文档')), warnings)
         return True
 
     def check_document_links(self) -> bool:
@@ -5006,9 +5073,14 @@ class MarkdownWindow(DocumentActions):
     def _bind_navigation(self, widget):
         for sequence in ('<Control-f>', '<Control-F>'):
             widget.bind(sequence, self._key(self.toggle_find))
-        # Bind on the body widget, before Tk's Text class handles Ctrl+M as
-        # Return; tree/search/dialog shortcuts retain their own meaning.
-        widget.bind("<Control-m>", self._key(self.switch_at_selection))
+        # Consume Shift+M before Text inserts an uppercase M. Extra modifiers
+        # must still reach their own shortcuts, notably Ctrl+Shift+M (formula).
+        def jump(event):
+            if event.state & 0xC:  # Control or Alt
+                return None
+            return self._key(self.switch_at_selection)(event)
+        for sequence in ("<Shift-M>", "<Shift-m>"):
+            widget.bind(sequence, jump)
         widget.bind("<Control-Home>", self._key(lambda: self.document_edge(False)))
         widget.bind("<Control-End>", self._key(lambda: self.document_edge(True)))
 

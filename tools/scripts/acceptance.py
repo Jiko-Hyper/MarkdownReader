@@ -29,7 +29,7 @@ from unittest import mock
 from ctypes import wintypes as w
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]   # tools/scripts -> 仓库根
 
 
 def _code_root() -> Path:
@@ -53,6 +53,7 @@ CODE_ROOT = _code_root()
 WEBUI = CODE_ROOT / "webui"
 sys.path.insert(0, str(CODE_ROOT))
 from mdreader import core, documents as D, plugins as P, winui  # noqa: E402
+from mdreader import selection as SE  # noqa: E402
 from mdreader.ime import CANDIDATE_GAP, CFS_CANDIDATEPOS, CFS_RECT  # noqa: E402
 
 RESULTS: list[tuple[str, str, str, str]] = []
@@ -693,8 +694,8 @@ def plugin_section(win, root: Path):
         reason = str(exc)
     row = next(r for r in store.list_plugins() if r["id"] == "mdreader.sample-incompatible")
     check("插件", "版本不兼容的插件只被禁用并写明原因",
-          row["state"] == "unavailable" and "0.2.8" in row["reason"]
-          and "无法启用" in reason)
+          row["state"] == "unavailable" and ">=9.0.0" in row["reason"]
+          and core.APP_VERSION in row["reason"] and "无法启用" in reason)
 
     # -- 安装包越界与卸载 ------------------------------------------------
     evil = packages / "traversal.zip"
@@ -1800,6 +1801,132 @@ def entries_section(win, root: Path, project: str):
     check("界面", "本地服务报告同一版本", server_ok)
 
 
+def settle(win, dialog, timeout=15.0):
+    """等真实窗口把后台请求跑完：只转事件循环，不阻塞界面。"""
+    deadline = time.perf_counter() + timeout
+    while dialog.busy and time.perf_counter() < deadline:
+        win.root.update()
+        time.sleep(0.02)
+    return not dialog.busy
+
+
+def selection_section(win, root: Path):
+    section("【选区 AI 修改】B01：只发选区、按范围应用、一次撤销、过期保护")
+
+    for tab in list(win.tabs):
+        with _quiet_prompt(win):
+            win.close_tab(tab)
+    document = write(root / "选区" / "报告.md",
+                     "# 报告\n\n第一段保持原样。\n\n第二段要被改。\n\n第三段保持原样。\n")
+    win.open_local_files([str(document)])
+    win.show_source()
+    original = win.get_text()
+    phrase = "第二段要被改。"
+    start = original.index(phrase)
+    reply = {"ok": True, "text": "已按要求改写", "document": None, "replacement": "第二段已经被改。",
+             "selection": True, "model": "验收用假模型", "protocol": "chat", "note": ""}
+    sent = []
+
+    def fake_chat(payload, test=False):
+        # 真实窗口、真实对话框、真实线程；只有网络这一层换成固定回复。
+        sent.append(payload)
+        return dict(reply)
+
+    def select_phrase():
+        win.editor.tag_add("sel", "1.0+%dc" % start, "1.0+%dc" % (start + len(phrase)))
+
+    win.connection_api = core.Api(win.ws, str(WEBUI))
+    store = win.connection_api.providers
+    with mock.patch.object(store, "chat", side_effect=fake_chat):
+        win.show_ai_connection()
+        dialog = win._assistant_dialog
+        name = dialog.name
+        check("选区", "助手窗口提供选区修改入口",
+              dialog is not None and len(dialog.intent_buttons) == len(SE.INTENTS) + 1,
+              "按钮数 %d" % len(getattr(dialog, "intent_buttons", [])))
+        check("选区", "默认发送范围是仅选区",
+              dialog.scope.get() == SE.SCOPE_LABELS["selection"], dialog.scope.get())
+
+        dialog.request_selection("polish")
+        check("选区", "没有选中文字时不发送请求，并写明该怎么做",
+              not sent and "选中" in dialog.status_label.cget("text"),
+              dialog.status_label.cget("text"))
+
+        select_phrase()
+        dialog.request_selection("polish")
+        check("选区", "真实窗口里请求能完成", settle(win, dialog) and dialog.selections[name] is not None)
+        selection = sent[-1].get("selection", {}) if sent else {}
+        check("选区", "只发送选中的文字", selection.get("outgoing") == phrase,
+              repr(selection.get("outgoing"))[:60])
+        check("选区", "选区外的正文不进请求体",
+              "第一段保持原样" not in json.dumps(sent[-1], ensure_ascii=False))
+        check("选区", "发送范围写明字数与字符区间",
+              "仅选区" in str(selection.get("scope")) and "字符" in str(selection.get("scope")),
+              str(selection.get("scope")))
+
+        dialog.apply_selection_proposal()
+        expected = original[:start] + reply["replacement"] + original[start + len(phrase):]
+        check("选区", "应用只替换选中的范围", win.get_text() == expected)
+        check("选区", "应用后不会自动写盘", document.read_text(encoding="utf-8") == original)
+        win.editor.edit_undo()
+        win.root.update()
+        check("选区", "一次应用对应一次撤销", win.get_text() == original, win.get_text()[:40])
+
+        select_phrase()
+        dialog.request_selection("shorten")
+        settle(win, dialog)
+        dialog.cancel_selection_proposal()
+        check("选区", "取消建议不改变正文",
+              win.get_text() == original and dialog.selections[name] is None)
+
+        select_phrase()
+        dialog.request_selection("expand")
+        settle(win, dialog)
+        win.editor.insert("end", "窗口里新增的一行\n")
+        win.editor.edit_separator()
+        changed = win.get_text()
+        dialog.apply_selection_proposal()
+        check("选区", "正文变化后拒绝应用旧建议",
+              win.get_text() == changed and "变化" in dialog.feedback[name])
+        dialog.cancel_selection_proposal()
+        win.editor.edit_undo()
+        win.root.update()
+        check("选区", "拒绝之后还能回到原文继续改", win.get_text() == original)
+
+        select_phrase()
+        dialog.scope.set(SE.SCOPE_LABELS["document"])
+        dialog.request_selection("polish")
+        settle(win, dialog)
+        selection = sent[-1].get("selection", {})
+        check("选区", "只有显式选整篇文档才发送全文",
+              selection.get("outgoing") == original and "整篇文档" in str(selection.get("scope")),
+              str(selection.get("scope")))
+        dialog.cancel_selection_proposal()
+        dialog.scope.set(SE.SCOPE_LABELS["selection"])
+
+        if win.ime is not None and win.ime.editable:
+            win.ime.surface.show("ni'hao", 6)
+            before = len(sent)
+            dialog.request_selection("polish")
+            check("选区", "输入法组合中不发起选区修改",
+                  len(sent) == before and "输入法" in dialog.status_label.cget("text"),
+                  dialog.status_label.cget("text"))
+            win.ime._focus_out()
+        else:
+            skip("选区", "输入法组合中不发起选区修改", "本机没有可用的输入法适配器")
+
+        themed = True
+        for theme in winui.THEMES:
+            win.set_theme(theme)
+            win.root.update()
+            themed = themed and dialog.window.winfo_exists() and dialog.scope_box is not None
+        check("选区", "三种主题下助手窗口仍可用", themed)
+        dialog.close()
+    win.connection_api = None
+    skip("选区", "100% / 150% / 200% 缩放下的选区操作观感",
+         "本机只覆盖当前缩放（%.2f）；换缩放需要人工确认" % win.ui_scale)
+
+
 def share_section(win, root: Path, project: str):
     section("【分享】导出单篇与合集，断网可打开")
 
@@ -2014,6 +2141,7 @@ def main(argv=None) -> int:
         editing_section(win, root)
         table_section(win, root)
         formula_section(win, root)
+        selection_section(win, root)
         share_section(win, root, project)
         if args.lifecycle:
             close(win)                       # 让出前台，真正按快捷方式启动另一份

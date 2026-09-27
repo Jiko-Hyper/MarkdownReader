@@ -7,17 +7,21 @@ import webbrowser
 import difflib
 
 from .ai_providers import PROVIDERS, PROTOCOLS
+from . import selection as SE
 
 
 class AssistantDialog:
     def __init__(self, parent, store, palette, get_document=None, insert_reply=None,
-                 get_snapshot=None, apply_edit=None):
+                 get_snapshot=None, apply_edit=None, get_selection=None, apply_selection=None):
         self.store, self.pal = store, dict(palette)
         self.buttons = []
         self.settings = store.settings()
         self.get_document, self.insert_reply = get_document, insert_reply
         self.get_snapshot, self.apply_edit = get_snapshot, apply_edit
+        self.get_selection, self.apply_selection = get_selection, apply_selection
         self.proposals = {name: None for name in PROVIDERS}
+        self.selections = {name: None for name in PROVIDERS}
+        self.selection_note = {name: '' for name in PROVIDERS}
         self.history = {name: [] for name in PROVIDERS}
         self.replies = {name: '' for name in PROVIDERS}
         self.feedback = {name: '' for name in PROVIDERS}
@@ -88,6 +92,11 @@ class AssistantDialog:
         self.context_toggle.pack(anchor='w', pady=6)
         if get_document is None:
             self.context_toggle.config(state='disabled')
+        self.intent_buttons = []
+        self.apply_selection_button = self.cancel_selection_button = None
+        self.scope_box = None
+        if get_selection is not None and apply_selection is not None:
+            self.build_selection_group(body)
         self.label(body, '在这里输入问题（上方是对话记录）').pack(anchor='w', pady=(2, 4))
         self.prompt = tk.Text(body, height=3, width=76, wrap='word', bg=p['side'], fg=p['fg'],
                               insertbackground=p['fg'], relief='flat', font=('Microsoft YaHei UI', 10), padx=8, pady=6)
@@ -190,6 +199,8 @@ class AssistantDialog:
             self.window.tk.call(str(popup) + '.f.l', 'configure', '-background', p['side'],
                                 '-foreground', p['fg'], '-selectbackground', p['sel'],
                                 '-selectforeground', p['fg'])
+        if self.scope_box is not None:
+            self.scope_box.configure(style=combo, font=('Microsoft YaHei UI', 10))
         style.configure('Assistant.Vertical.TScrollbar', background=p['thumb'], troughcolor=p['side'],
                         bordercolor=p['side'], lightcolor=p['thumb'], darkcolor=p['thumb'], arrowcolor=p['fg'])
         style.map('Assistant.Vertical.TScrollbar', background=[('active', p['muted'])])
@@ -265,8 +276,13 @@ class AssistantDialog:
         self.provider_box.config(state='disabled' if value else 'readonly')
         self.model_box.config(state='disabled' if value else 'normal')
         self.protocol_box.config(state='disabled' if value else 'readonly')
+        for widget in self.intent_buttons:
+            widget.config(state='disabled' if value else 'normal')
+        if self.scope_box is not None:
+            self.scope_box.config(state='disabled' if value else 'readonly')
         self.apply_button.config(state='normal' if not value and self.proposals[self.name] else 'disabled')
         self.insert_button.config(state='disabled' if value or self.proposals[self.name] else 'normal')
+        self.paint_selection_buttons()
         self.paint_buttons()
 
     def work(self, fn, complete):
@@ -319,6 +335,118 @@ class AssistantDialog:
             self.work(lambda: store.chat({'provider': name}, test=True),
                       lambda result: self.status_label.config(text='连接成功，模型已回复：' + result['text'][:80]))
 
+    def build_selection_group(self, body):
+        """选区修改：先在文档里选中文字，再点一种改法；默认只发送选区。"""
+        p = self.pal
+        group = tk.Frame(body, bg=p['bg'])
+        group.pack(fill='x', pady=(2, 0))
+        self.label(group, '选区修改：先在文档里选中文字，再点一种改法（只改选中的范围）').pack(anchor='w')
+        row = tk.Frame(group, bg=p['bg'])
+        row.pack(fill='x', pady=(4, 0))
+        for key, label, _prompt in SE.INTENTS:
+            widget = self.button(row, label, (lambda name=key: self.request_selection(name)))
+            widget.pack(side='left', padx=(0, 8))
+            self.intent_buttons.append(widget)
+        custom = self.button(row, '自定义要求…', lambda: self.request_selection('custom'))
+        custom.pack(side='left')
+        self.intent_buttons.append(custom)
+        self.apply_selection_button = self.button(row, '应用建议', self.apply_selection_proposal, True)
+        self.apply_selection_button.pack(side='right')
+        self.apply_selection_button.config(state='disabled')
+        self.cancel_selection_button = self.button(row, '取消建议', self.cancel_selection_proposal)
+        self.cancel_selection_button.pack(side='right', padx=8)
+        self.cancel_selection_button.config(state='disabled')
+        scope_row = tk.Frame(group, bg=p['bg'])
+        scope_row.pack(fill='x', pady=(6, 0))
+        self.label(scope_row, '发送范围').pack(side='left', padx=(0, 8))
+        self.scope = tk.StringVar(value=SE.SCOPE_LABELS['selection'])
+        self.scope_box = ttk.Combobox(scope_row, textvariable=self.scope, state='readonly',
+                                      values=[SE.SCOPE_LABELS[key] for key in SE.SCOPES])
+        self.scope_box.pack(side='left')
+        self.label(scope_row, '只有你选了更大范围，才会发送选区以外的文字').pack(side='left', padx=(8, 0))
+
+    def request_selection(self, intent):
+        """选区请求：保存文档身份、正文版本和准确范围，默认只发选区。"""
+        if self.busy or self.get_selection is None:
+            return
+        if not self.save():
+            return
+        name = self.name
+        try:
+            selection = self.get_selection()
+        except ValueError as exc:
+            self.status_label.config(text=str(exc))
+            return
+        instruction = next((prompt for key, _label, prompt in SE.INTENTS if key == intent), '')
+        if intent == 'custom':
+            instruction = self.prompt.get('1.0', 'end-1c').strip()
+            if not instruction:
+                self.status_label.config(text='请先在下面的输入框里写下修改要求')
+                return
+        scope = next(key for key, label in SE.SCOPE_LABELS.items() if label == self.scope.get())
+        try:
+            outgoing, note = SE.outgoing(selection['text'], selection['start'], selection['end'], scope)
+            before = SE.request_before(selection['tab'], selection['text'],
+                                       selection['start'], selection['end'])
+        except SE.SelectionError as exc:
+            self.status_label.config(text=str(exc))
+            return
+        selected = selection['text'][before['start']:before['end']]
+        self.selections[name] = None
+        self.selection_note[name] = '本次发送：%s；要求：%s' % (note, instruction)
+        messages = self.history[name] + [{'role': 'user', 'content': '（选区修改）' + instruction}]
+        shown = outgoing if len(outgoing) <= 400 else outgoing[:400] + '…'
+        self.feedback[name] = ('%s\n\n即将发送的内容：\n%s\n\n正在等待模型回复…'
+                               % (self.selection_note[name], shown))
+        self.render_history()
+        store = self.store
+        payload = {'provider': name, 'messages': messages,
+                   'selection': {'outgoing': outgoing, 'instruction': instruction, 'scope': note}}
+        def done(result):
+            self.history[name] = messages + [{'role': 'assistant', 'content': result['text']}]
+            self.replies[name] = result['text']
+            replacement = result.get('replacement')
+            if isinstance(replacement, str) and replacement.strip():
+                self.selections[name] = (before, replacement, instruction)
+                self.feedback[name] = ('%s\n\n建议（- 原文，+ 建议；应用时只替换选中范围）：\n%s'
+                                       % (self.selection_note[name], SE.diff_of(selected, replacement)))
+                self.status_label.config(text='请核对建议：应用只改选中范围，取消则正文不变。')
+            else:
+                self.selections[name] = None
+                self.feedback[name] = result.get('text') or '模型没有给出替换文字，正文没有改动。'
+                self.status_label.config(text='模型没有给出替换文字，正文没有改动。')
+            if intent == 'custom':
+                self.prompt.delete('1.0', 'end')
+            self.render_history()
+        self.work(lambda: store.chat(payload), done)
+
+    def apply_selection_proposal(self):
+        proposal = self.selections[self.name]
+        if self.busy or proposal is None or self.apply_selection is None:
+            return
+        before, replacement, _instruction = proposal
+        try:
+            self.apply_selection(before, replacement)
+        except ValueError as exc:
+            self.feedback[self.name] = '这次没有应用：%s\n建议仍在，可回到原文档核对后重试，或点「取消建议」。' % exc
+            self.status_label.config(text=str(exc))
+            self.render_history()
+            return
+        self.selections[self.name] = None
+        self.selection_note[self.name] = ''
+        self.feedback[self.name] = '选区修改已应用，可在编辑器撤销；保存后才会写入文件。'
+        self.render_history()
+        self.status_label.config(text=self.feedback[self.name])
+
+    def cancel_selection_proposal(self):
+        if self.selections[self.name] is None:
+            return
+        self.selections[self.name] = None
+        self.selection_note[self.name] = ''
+        self.feedback[self.name] = '已取消建议，正文没有改动。'
+        self.render_history()
+        self.status_label.config(text=self.feedback[self.name])
+
     def send(self):
         if self.busy:
             return
@@ -360,6 +488,15 @@ class AssistantDialog:
         self.work(lambda: store.chat({'provider': name, 'messages': messages, 'context': context,
                                      'edit': edit_enabled}), done)
 
+    def paint_selection_buttons(self):
+        """有建议且不忙时才能应用/取消；没有建议时两个按钮都点不动。"""
+        if self.apply_selection_button is None:
+            return
+        enabled = bool(self.selections[self.name]) and not self.busy
+        state = 'normal' if enabled else 'disabled'
+        self.apply_selection_button.config(state=state)
+        self.cancel_selection_button.config(state=state)
+
     def render_history(self):
         self.output.config(state='normal')
         self.output.delete('1.0', 'end')
@@ -374,6 +511,7 @@ class AssistantDialog:
         self.output.see('end')
         self.apply_button.config(state='normal' if self.proposals[self.name] and not self.busy else 'disabled')
         self.insert_button.config(state='disabled' if self.busy or self.proposals[self.name] else 'normal')
+        self.paint_selection_buttons()
         self.paint_buttons()
 
     def clear_chat(self):
@@ -381,6 +519,8 @@ class AssistantDialog:
         self.replies[self.name] = ''
         self.feedback[self.name] = ''
         self.proposals[self.name] = None
+        self.selections[self.name] = None
+        self.selection_note[self.name] = ''
         self.render_history()
 
     def apply_proposal(self):
@@ -417,7 +557,11 @@ class AssistantDialog:
         self._complete = None
         self.get_document = self.insert_reply = None
         self.get_snapshot = self.apply_edit = None
+        self.get_selection = self.apply_selection = None
         self.proposals.clear()
+        self.selections.clear()
+        for name in PROVIDERS:
+            self.selection_note[name] = ''
         if self.timer:
             self.window.after_cancel(self.timer)
         if self.refresh_timer:

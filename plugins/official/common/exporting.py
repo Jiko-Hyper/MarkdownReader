@@ -23,6 +23,9 @@ BODY_FONT = ("Microsoft YaHei", "msyh.ttc", "msyhbd.ttc")
 CODE_FONT = ("Consolas", "consola.ttf", "consolab.ttf")
 # 代码字体（Consolas）没有中文字形，代码里的中文要退回正文字体，而不是报“没有字形”。
 CODE_FALLBACKS = SYMBOL_FONTS + (BODY_FONT,)
+# ReportLab 把段内图片放在正文框往右约 6pt 的位置：宽度上限必须预留这段偏移，
+# 否则图片会压过右边距（495pt 的公式曾因此多出 2pt）。
+INLINE_IMAGE_INSET = 12
 
 _RANGES = {}
 
@@ -202,6 +205,15 @@ _DISPLAY_BLOCK = re.compile(
     r"|^[ \t]{0,3}\$\$[ \t]*(?P<inline>\S.*?)[ \t]*\$\$[ \t]*$", re.S)
 
 
+def unescaped_markdown(text):
+    """CommonMark 解析后的文本：``\\,`` ``\\{`` 这类转义会变成普通字符。
+
+    公式源码按**原始 Markdown** 扫描，正文 token 却是解析后的文本；两边的反斜杠
+    数量不一致，查表就会落空（含 ``\\,`` 的公式曾静默留在正文里没有变成图片）。
+    """
+    return re.sub(r'\\([!"#$%&\'()*+,\-./:;<=>?@\[\\\]^_`{|}~])', r'\1', text)
+
+
 def protect_display_formulas(markdown, formulas):
     """把独立公式块换成单行哨兵，返回 ``(新正文, 查找表)``。
 
@@ -210,6 +222,10 @@ def protect_display_formulas(markdown, formulas):
     它在词法上是普通文本，于是整块公式必然落在同一个 text token 里。
     """
     lookup = dict(formulas)
+    for tex, info in formulas.items():
+        plain = unescaped_markdown(tex)
+        if plain != tex:
+            lookup.setdefault(plain, info)
     if not formulas or "$$" not in markdown:
         return markdown, lookup
 
@@ -255,14 +271,26 @@ def split_formulas(text, formulas):
     return pieces
 
 
-def formula_image(task, info):
-    """返回插件做图用的 ``(路径, 宽, 高)``（点），并记一次“图片降级”。"""
+def formula_image(task, info, width_limit=None, height_limit=None):
+    """返回插件做图用的 ``(路径, 宽, 高, 是否缩小)``（点）。
+
+    公式图先前按像素 1:1 换算点数，长公式会比正文还宽：Word 里压出版心，
+    PDF 里 ReportLab 直接报错、整份文档导不出来。这里按版面等比缩小，
+    内容不变、只是字更小，缩小这件事必须报给用户。
+    """
     from PIL import Image
     path = task.path("in", info["name"])
     with Image.open(path) as picture:
         width, height = picture.size
     wanted = max(8.0, width * 0.75)                 # 像素 → 点，与正文 11pt 相当
-    return path, wanted, max(1, round(height * wanted / max(1, width)))
+    scale = 1.0
+    if width_limit and wanted > width_limit:
+        scale = width_limit / wanted
+    if height_limit and height * .75 * scale > height_limit:
+        scale = min(scale, height_limit / max(1e-6, height * .75))
+    if scale < 1.0:
+        wanted *= scale
+    return path, wanted, max(1, round(height * wanted / max(1, width))), scale < 1.0
 
 
 def formula_warnings(degraded):
@@ -276,10 +304,36 @@ def formula_warnings(degraded):
             "原始写法已写进图片的替代文字：%s" % (len(degraded), sample)]
 
 
+def formula_scale_warnings(shrunk):
+    """过宽公式被缩小时必须说清楚，不能让用户以为导出稿和原文一样大。"""
+    if not shrunk:
+        return []
+    sample = "、".join(shrunk[:3])
+    if len(shrunk) > 3:
+        sample += " 等"
+    return ["%d 个公式比正文宽，已**等比缩小**到版面内（内容不丢，字会更小）：%s"
+            % (len(shrunk), sample)]
+
+
 def blocks(markdown):
     from markdown_it import MarkdownIt
-    tokens = MarkdownIt("commonmark", {"html": False}).enable("table").parse(markdown)
-    result, lists, heading, quote = [], [], 0, 0
+    parser = MarkdownIt("commonmark", {"html": False}).enable("table")
+    environment = {}
+    tokens = parser.parse(markdown, environment)
+    # CommonMark otherwise consumes [^note]: text as a link definition. Preserve
+    # the literal footnote until native footnotes are supported. Parser-provided
+    # line ranges exclude fenced/indented code and cover multi-line definitions.
+    footnotes = [entry for name, entry in environment.get("references", {}).items()
+                 if name.startswith("^")]
+    if footnotes:
+        lines = markdown.splitlines(keepends=True)
+        for entry in footnotes:
+            start = entry["map"][0]
+            lines[start] = lines[start].replace("[^", "\\[^", 1)
+        tokens = parser.parse("".join(lines), {})
+    result, lists, heading, quote, list_id = [], [], 0, 0, 0
+    if footnotes:
+        result.append({"type": "warning", "message": "脚注按原始文字保留，暂不生成页脚脚注或跳转。"})
     i = 0
     while i < len(tokens):
         t = tokens[i]
@@ -294,9 +348,13 @@ def blocks(markdown):
                 i += 1
             result.append({"type": "table", "rows": rows})
         elif t.type in ("bullet_list_open", "ordered_list_open"):
-            lists.append({"ordered": t.type == "ordered_list_open", "number": int(t.attrGet("start") or 1) - 1})
+            list_id += 1
+            lists.append({"ordered": t.type == "ordered_list_open", "number": int(t.attrGet("start") or 1) - 1,
+                          "id": list_id, "first": False})
         elif t.type in ("bullet_list_close", "ordered_list_close"): lists.pop()
-        elif t.type == "list_item_open": lists[-1]["number"] += 1
+        elif t.type == "list_item_open":
+            lists[-1]["number"] += 1
+            lists[-1]["first"] = True
         elif t.type == "heading_open": heading = int(t.tag[1:])
         elif t.type == "heading_close": heading = 0
         elif t.type == "blockquote_open": quote += 1
@@ -304,8 +362,11 @@ def blocks(markdown):
         elif t.type == "inline":
             result.append({"type": "paragraph", "tokens": t.children or [], "heading": heading,
                            "depth": len(lists), "list": dict(lists[-1]) if lists else None, "quote": quote})
+            if lists: lists[-1]["first"] = False
         elif t.type in ("fence", "code_block"):
             result.append({"type": "code", "text": t.content})
+            if t.type == "fence" and t.info.strip().lower() == "mermaid":
+                result.append({"type": "warning", "message": "Mermaid 按代码保留，暂不生成图表。"})
         elif t.type == "hr": result.append({"type": "rule"})
         i += 1
     return result
@@ -357,10 +418,40 @@ def docx(task):
     deficit = {}
     formulas = task.options.get("formulas") or {}
     degraded = []
+    shrunk = []
+    list_numbers = {}
 
-    def add_formula(paragraph, info):
+    def number_paragraph(paragraph, block):
+        item = block["list"]
+        paragraph.paragraph_format.left_indent = Inches(.25 * block["depth"])
+        if not item["first"]:
+            return
+        paragraph.paragraph_format.first_line_indent = Inches(-.16)
+        if item["id"] not in list_numbers:
+            numbering = document.part.numbering_part.element
+            ids = [int(node.get(qn("w:abstractNumId"))) for node in numbering.findall(qn("w:abstractNum"))]
+            abstract_id = max(ids, default=-1) + 1
+            abstract = OxmlElement("w:abstractNum")
+            abstract.set(qn("w:abstractNumId"), str(abstract_id))
+            level = OxmlElement("w:lvl")
+            level.set(qn("w:ilvl"), "0")
+            for name, value in (("start", str(item["number"])),
+                                ("numFmt", "decimal" if item["ordered"] else "bullet"),
+                                ("lvlText", "%1." if item["ordered"] else "•"),
+                                ("lvlJc", "left")):
+                node = OxmlElement("w:" + name)
+                node.set(qn("w:val"), value)
+                level.append(node)
+            abstract.append(level)
+            numbering.insert(0, abstract)
+            list_numbers[item["id"]] = numbering.add_num(abstract_id).numId
+        properties = paragraph._p.get_or_add_pPr().get_or_add_numPr()
+        properties.get_or_add_ilvl().val = 0
+        properties.get_or_add_numId().val = list_numbers[item["id"]]
+
+    def add_formula(paragraph, info, limit=480):
         """公式在 Word 里以图片嵌入，并把原始写法写进图片的替代文字。"""
-        path, width, height = formula_image(task, info)
+        path, width, height, scaled = formula_image(task, info, width_limit=limit, height_limit=660)
         run = paragraph.add_run()
         shape = run.add_picture(path, width=Pt(width), height=Pt(height))
         try:
@@ -369,6 +460,8 @@ def docx(task):
         except Exception:                       # 老版本 python-docx 没有 docPr 也不影响导出
             pass
         degraded.append(info.get("tex", ""))
+        if scaled:
+            shrunk.append(info.get("tex", ""))
 
     def inline(paragraph, tokens, limit=480, heading=False):
         bold, italic, link = heading, False, None
@@ -390,7 +483,7 @@ def docx(task):
                 chain = CODE_FALLBACKS if kind == "code_inline" else SYMBOL_FONTS
                 for piece_kind, piece in split_formulas(text, lookup if kind == "text" else {}):
                     if piece_kind == "formula":
-                        add_formula(paragraph, piece)
+                        add_formula(paragraph, piece, limit)
                         continue
                     for family, run_text in split_runs(piece, base, bold, deficit, chain):
                         run = paragraph.add_run(run_text)
@@ -399,6 +492,11 @@ def docx(task):
                             _set_run_font(run, family)
                         elif kind == "code_inline":
                             run.font.name = base[0]
+                        if link and urlsplit(link).scheme.lower() in ("http", "https", "mailto"):
+                            hyperlink = OxmlElement("w:hyperlink")
+                            hyperlink.set(qn("r:id"), document.part.relate_to(link, RT.HYPERLINK, is_external=True))
+                            hyperlink.append(run._r)
+                            paragraph._p.append(hyperlink)
     markdown, lookup = protect_display_formulas(task.input.get("markdown") or "",
                                              formulas)
     content = blocks(markdown)
@@ -429,16 +527,15 @@ def docx(task):
         elif block["type"] == "paragraph":
             level = block["heading"]
             style = "Heading %d" % level if level else "Normal"
-            if block["list"]:
-                style = "List Number" if block["list"]["ordered"] else "List Bullet"
             paragraph = document.add_paragraph(style=style)
-            if block["depth"] > 1: paragraph.paragraph_format.left_indent = Inches(.25 * block["depth"])
+            if block["list"]: number_paragraph(paragraph, block)
             if block["quote"]: paragraph.paragraph_format.left_indent = Inches(.3)
             inline(paragraph, block["tokens"], heading=bool(level))
         elif block["type"] == "rule": document.add_paragraph("―" * 24)
     target = task.path("document.docx")
     document.save(target)
-    warnings = font_warnings(deficit) + formula_warnings(degraded)
+    warnings = font_warnings(deficit) + formula_warnings(degraded) + formula_scale_warnings(shrunk)
+    warnings += list(dict.fromkeys(block["message"] for block in content if block["type"] == "warning"))
     return {"kind": "export", "path": target, "warnings": warnings}
 
 
@@ -489,11 +586,16 @@ def pdf(task):
     from reportlab.lib import colors
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable
     from reportlab.lib.pagesizes import A4
+    media_width = A4[0] - 96 - INLINE_IMAGE_INSET
     base, registered = _pdf_fonts()
     root = registered[base[0]][0]
     deficit = {}
-    normal = ParagraphStyle("body", fontName=root, fontSize=11, leading=17,
+    normal = ParagraphStyle("body", fontName=root, fontSize=11, leading=17, autoLeading="max",
                             spaceAfter=9, wordWrap="CJK", splitLongWords=True)
+    # ReportLab 的 CJK 折行遇到“文本为空的图片片段”会执行 ord("") 直接抛错：
+    # 图片或公式比该行剩余宽度长时，PDF 会整份导不出来。含图片/公式的段落改用
+    # 通用折行（长段中文仍由 splitLongWords 逐字折行），纯文字段落保持 CJK 折行。
+    media = ParagraphStyle("body-media", parent=normal, wordWrap=None)
     def one_font(text, bold, nbsp=False):
         """按字形覆盖率挑字体；基础字体能画的字符不打标签，保持原有排版。"""
         pieces = []
@@ -508,20 +610,38 @@ def pdf(task):
         return "".join(pieces)
     formulas = task.options.get("formulas") or {}
     degraded = []
+    shrunk = []
 
-    def formula_markup(info):
-        """公式在 PDF 里以图片嵌入；原始写法留在替代说明里（正文里不可检索）。"""
-        path, width, height = formula_image(task, info)
+    def formula_markup(info, limit):
+        """公式在 PDF 里以图片嵌入；过宽时先等比缩小，否则 ReportLab 会直接报错。"""
+        path, width, height, scaled = formula_image(task, info, width_limit=limit,
+                                                    height_limit=A4[1] - 200)
         degraded.append(info.get("tex", ""))
+        if scaled:
+            shrunk.append(info.get("tex", ""))
         return ('<img src="%s" width="%.1f" height="%.1f" valign="middle"/>'
                 % (html.escape(path, quote=True), width, height))
 
-    def rich(tokens):
+    def formula_media(tokens):
+        """这些 token 里有没有图片或公式：有就必须换用 media 折行样式。"""
+        for token in tokens:
+            if token.type == "image":
+                return True
+            if token.type in ("text", "code_inline", "html_inline") and any(
+                    kind == "formula" for kind, _ in split_formulas(token.content, lookup)):
+                return True
+        return False
+
+    def rich(tokens, limit=None):
         out, links, bold = [], [], False
         for token in tokens:
             kind = token.type
-            if kind == "strong_open": bold = True
-            elif kind == "strong_close": bold = False
+            if kind == "strong_open":
+                bold = True
+                out.append("<b>")
+            elif kind == "strong_close":
+                bold = False
+                out.append("</b>")
             elif kind == "em_open": out.append("<i>")
             elif kind == "em_close": out.append("</i>")
             elif kind == "link_open":
@@ -532,12 +652,13 @@ def pdf(task):
             elif kind == "link_close":
                 if links and links.pop(): out.append('</link>')
             elif kind in ("softbreak", "hardbreak"): out.append("<br/>")
-            elif kind == "image": out.append(one_font(token.content, bold))
+            elif kind == "image":
+                out.append(one_font(token.content, bold))
             elif kind in ("text", "code_inline", "html_inline"):
                 for piece_kind, piece in split_formulas(token.content,
                                                         lookup if kind == "text" else {}):
-                    out.append(formula_markup(piece) if piece_kind == "formula"
-                               else one_font(piece, bold))
+                    out.append(formula_markup(piece, limit if limit else media_width)
+                               if piece_kind == "formula" else one_font(piece, bold))
         return "".join(out)
     story = []
     markdown, lookup = protect_display_formulas(task.input.get("markdown") or "",
@@ -546,9 +667,24 @@ def pdf(task):
     for index, block in enumerate(content):
         task.progress("生成 PDF", int(10 + 80 * index / max(1, len(content))))
         if block["type"] == "table":
-            rows = [[Paragraph(rich(cell), normal) for cell in row] for row in block["rows"]]
-            if not rows: continue
-            columns = max(map(len, rows))
+            if not block["rows"]: continue
+            columns = max(map(len, block["rows"]))
+            cell_width = (A4[0] - 96) / columns - 20
+            rows = []
+            for row in block["rows"]:
+                cells = []
+                for tokens in row:
+                    # Flowables participate in the row height calculation. Inline
+                    # images with a middle baseline can paint over the header.
+                    cell = [Paragraph(rich(tokens, cell_width),
+                                      media if formula_media(tokens) else normal)]
+                    for token in tokens:
+                        if token.type == "image":
+                            path, width, ratio = image_info(task, token)
+                            width = min(width, cell_width, 400 / ratio)
+                            cell.append(Image(path, width=width, height=width * ratio, hAlign="LEFT"))
+                    cells.append(cell)
+                rows.append(cells)
             table = Table(rows, colWidths=[A4[0] - 96] if columns == 1 else [(A4[0] - 96) / columns] * columns,
                           repeatRows=1, hAlign="LEFT")
             table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), .5, colors.HexColor("#cbd0d9")),
@@ -562,16 +698,16 @@ def pdf(task):
         elif block["type"] == "rule": story.append(HRFlowable(width="100%", color=colors.lightgrey))
         elif block["type"] == "paragraph":
             level = block["heading"]
-            style = ParagraphStyle("p", parent=normal,
+            style = ParagraphStyle("p", parent=media if formula_media(block["tokens"]) else normal,
                                    fontSize=24 - level * 2 if level else 11,
                                    leading=30 - level * 2 if level else 17,
                                    keepWithNext=bool(level), leftIndent=14 * (block["depth"] + block["quote"]))
-            prefix = (str(block["list"]["number"]) + ". " if block["list"]["ordered"] else "• ") if block["list"] else ""
-            story.append(Paragraph(prefix + rich(block["tokens"]), style))
+            prefix = (str(block["list"]["number"]) + ". " if block["list"]["ordered"] else "• ") if block["list"] and block["list"]["first"] else ""
+            story.append(Paragraph(prefix + rich(block["tokens"], media_width), style))
             for token in block["tokens"]:
                 if token.type == "image":
                     path, width, ratio = image_info(task, token)
-                    width = min(width, A4[0] - 96, (A4[1] - 130) / ratio)
+                    width = min(width, media_width, (A4[1] - 130) / ratio)
                     story.extend([Image(path, width=width, height=width * ratio, hAlign="LEFT"), Spacer(1, 10)])
     def footer(canvas, doc):
         canvas.setFont("Helvetica", 9)
@@ -582,4 +718,6 @@ def pdf(task):
                       bottomMargin=48, title=task.options.get("title", "Markdown Document")).build(
                           story or [Paragraph(" ", normal)], onFirstPage=footer, onLaterPages=footer)
     return {"kind": "export", "path": target,
-            "warnings": font_warnings(deficit) + formula_warnings(degraded)}
+            "warnings": font_warnings(deficit) + formula_warnings(degraded)
+            + formula_scale_warnings(shrunk)
+            + list(dict.fromkeys(block["message"] for block in content if block["type"] == "warning"))}

@@ -4,7 +4,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]   # tools/scripts -> 仓库根
 sys.path.insert(0, str(ROOT))
 from mdreader import core
 from PIL import Image, ImageDraw

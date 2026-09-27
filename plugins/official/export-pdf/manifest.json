@@ -1,7 +1,7 @@
 {
   "id": "mdreader.export-pdf",
   "name": "Markdown 转 PDF",
-  "version": "1.0.2",
+  "version": "1.0.4",
   "api_version": "1",
   "app_version_range": ">=0.2.8",
   "entrypoint": "plugin.py",
