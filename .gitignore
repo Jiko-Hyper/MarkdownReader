@@ -28,3 +28,6 @@ ai-providers.json
 .idea/
 Thumbs.db
 desktop.ini
+
+installed-target.json
+.mdreader-installations.json

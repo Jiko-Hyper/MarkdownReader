@@ -87,4 +87,4 @@ gcc -shared -O2 -Wall -Wextra -static-libgcc mdreader/native_bridge.c `
 格式转换插件首次构建前，执行 `python -m pip install -r plugins/official/document-convert/requirements.txt --target plugins/conversion-dependencies`。仅重建转换插件可运行 `python tools/scripts/build_conversion_plugin.py`；它同时更新宿主受信清单。
 
 
-安装/卸载脚本验证：`powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_install.ps1` 与 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_uninstall.ps1`。测试只使用隔离的临时安装与模拟文档，卸载测试同时覆盖双击入口、取消、路径保护、运行中拒绝卸载和数据保留。完整发布构建会强制执行这两项。
+安装/卸载脚本验证：`powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_install.ps1` 与 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_uninstall.ps1`。测试只使用隔离的临时安装与模拟文档，卸载测试同时覆盖双击入口、取消、路径保护、运行中拒绝卸载、按记录删除程序与数据两个目录，以及下载目录和目标外文件保留。完整发布构建会强制执行这两项。

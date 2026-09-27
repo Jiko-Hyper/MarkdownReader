@@ -7,7 +7,7 @@
 #     .\安装到桌面.ps1 -InstallDir D:\App 指定安装目录
 #     .\安装到桌面.ps1 -Associate         同时登记「打开方式」（不抢默认程序）
 #
-#  文档默认保存在 %USERPROFILE%\MDReader，卸载不会删除。
+#  文档默认保存在 %USERPROFILE%\MDReader，完整卸载将删除所选程序和数据目录。
 # ============================================================
 
 [CmdletBinding()]
@@ -40,6 +40,14 @@ function Confirm-Paths([string]$program, [string]$data) {
     $d = [IO.Path]::GetFullPath($data).TrimEnd('\')
     if ($p -eq $d -or $p.StartsWith($d + '\', [StringComparison]::OrdinalIgnoreCase) -or $d.StartsWith($p + '\', [StringComparison]::OrdinalIgnoreCase)) {
         throw '程序目录和配置与数据目录必须分开，不能互相包含。'
+    }
+    foreach ($candidate in @($p, $d)) {
+        foreach ($special in @($env:USERPROFILE,$env:WINDIR,$env:LOCALAPPDATA,$env:APPDATA,$env:ProgramFiles,${env:ProgramFiles(x86)},$env:ProgramData,[Environment]::GetFolderPath('Desktop'),[Environment]::GetFolderPath('MyDocuments'),(Join-Path $env:USERPROFILE 'Downloads'))) {
+            if ($special) {
+                $special = [IO.Path]::GetFullPath($special).TrimEnd('\')
+                if ($candidate -eq $special -or $special.StartsWith($candidate+'\',[StringComparison]::OrdinalIgnoreCase)) { throw '请选择专用子文件夹，不要选择系统、桌面或用户公共目录。' }
+            }
+        }
     }
     if ($p -eq [IO.Path]::GetPathRoot($p).TrimEnd('\') -or $d -eq [IO.Path]::GetPathRoot($d).TrimEnd('\')) { throw '请选择专用子文件夹，不要选择磁盘根目录。' }
 }
@@ -80,7 +88,7 @@ function Select-InstallFolders([string]$program, [string]$data) {
         $boxes += $box
     }
     $hint = New-Object Windows.Forms.Label
-    $hint.Text = '不会搬迁或删除旧数据；选择已有数据目录可继续使用原记录。'
+    $hint.Text = '请选择专用目录：完整卸载会删除所选两个目录内的全部内容。'
     $hint.SetBounds(22, 188, 596, 25)
     $install = New-Object Windows.Forms.Button
     $install.Text = '安装'; $install.SetBounds(398, 232, 105, 34)
@@ -179,6 +187,7 @@ if ($DesktopOnly) {
     }
 }
 
+$target = [IO.Path]::GetFullPath($target).TrimEnd('\')
 $targetExe = Join-Path $target "$APPNAME.exe"
 if (-not (Test-Path -LiteralPath $targetExe)) {
     throw "找不到 $targetExe"
@@ -187,7 +196,23 @@ New-Item -ItemType Directory -Force -Path $WorkspaceDir | Out-Null
 $probe = Join-Path $WorkspaceDir ('.mdreader-write-test-' + [guid]::NewGuid().ToString('N'))
 try { [IO.File]::WriteAllText($probe, '') } finally { if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe } }
 $configPath = Join-Path $target 'installation.json'
-$config = @{ workspace = $WorkspaceDir; schema = 1 } | ConvertTo-Json
+$installationId = [guid]::NewGuid().ToString()
+if (Test-Path -LiteralPath $configPath) {
+    $old = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $oldId = [guid]::Empty
+    if ($old.schema -eq 2 -and $old.install_dir -eq $target -and [guid]::TryParse([string]$old.installation_id, [ref]$oldId) -and $oldId -ne [guid]::Empty) { $installationId = $old.installation_id }
+}
+$markerPath = Join-Path $WorkspaceDir '.mdreader-installations.json'
+$entries = @()
+if (Test-Path -LiteralPath $markerPath) {
+    $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($marker.schema -ne 1 -or -not $marker.installations) { throw '数据目录的安装关联记录损坏，请检查后重试。' }
+    $entries = @($marker.installations | Where-Object { $_.id -ne $installationId -and $_.install_dir -ne $target })
+}
+$entries += @{ id = $installationId; install_dir = $target }
+$markerJson = @{ schema = 1; installations = @($entries) } | ConvertTo-Json -Depth 5
+[IO.File]::WriteAllText($markerPath, $markerJson, [Text.UTF8Encoding]::new($false))
+$config = @{ workspace = $WorkspaceDir.TrimEnd('\'); install_dir = $target; installation_id = $installationId; schema = 2 } | ConvertTo-Json
 [IO.File]::WriteAllText($configPath, $config, [Text.UTF8Encoding]::new($false))
 
 # --------------------------------------------------------- 2. 桌面快捷方式
@@ -227,12 +252,17 @@ if ($Associate) {
     }
 }
 
+# The extracted package remembers the destination without changing portable runtime settings.
+if ([IO.Path]::GetFullPath($here).TrimEnd('\') -ne $target) {
+    try { [IO.File]::WriteAllText((Join-Path $here 'installed-target.json'), $config, [Text.UTF8Encoding]::new($false)) }
+    catch { Write-Warn2 '无法在下载包保存安装地址，请从已安装目录运行卸载入口。' }
+}
 # ------------------------------------------------------------------ 完成
 $ws = $WorkspaceDir
 Write-Host ""
 Write-Host "  安装完成！" -ForegroundColor Green
 Write-Host "  程序目录: $target"
-Write-Host "  文档目录: $ws  （卸载不会删除）"
+Write-Host "  数据目录: $ws  （完整卸载会删除，请先备份）"
 Write-Host ""
 if (-not $NoShortcut) { Write-Host "  双击桌面上的 $APPNAME 图标即可启动。" -ForegroundColor Cyan }
 Write-Host ""

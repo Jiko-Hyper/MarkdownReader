@@ -27,7 +27,17 @@ try {
     Assert (Test-Path -LiteralPath (Join-Path $target '卸载.cmd')) 'Uninstall wrapper missing from installed app'
     Assert (Test-Path -LiteralPath (Join-Path $target '卸载.ps1')) 'Uninstall script missing from installed app'
     Assert ((Get-Content (Join-Path $target 'installation.json') -Raw -Encoding UTF8 | ConvertFrom-Json).workspace -eq $data) 'Custom data path not saved'
+    $record=Get-Content -LiteralPath (Join-Path $target 'installation.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert ($record.schema -eq 2 -and $record.install_dir -eq $target) 'Both installation paths must be recorded'
+    $receipt=Get-Content -LiteralPath (Join-Path $source 'installed-target.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert ($receipt.installation_id -eq $record.installation_id -and $receipt.install_dir -eq $target -and $receipt.workspace -eq $data) 'Source receipt must point to chosen paths'
+    $id=$record.installation_id
     & $installer -InstallDir $target -ShortcutDir $desktop -NoPause
+    $record=Get-Content -LiteralPath (Join-Path $target 'installation.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert ($record.installation_id -eq $id) 'Upgrade changed installation identity'
+    $marker=Get-Content -LiteralPath (Join-Path $data '.mdreader-installations.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert (@($marker.installations).Count -eq 1 -and $marker.installations[0].id -eq $id) 'Data association incorrect'
+
     Assert (Test-Path -LiteralPath (Join-Path $target 'runtime\pythonw.exe')) 'Fresh install failed'
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut((Join-Path $desktop 'MDReader.lnk'))

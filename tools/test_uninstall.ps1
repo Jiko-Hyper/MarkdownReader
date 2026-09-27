@@ -17,7 +17,9 @@ function Fixture($name) {
     foreach ($file in @('MDReader.exe','main.py','mdreader\core.py','runtime\pythonw.exe')) { Set-Content -LiteralPath (Join-Path $dir $file) 'fixture' }
     Set-Content -LiteralPath (Join-Path $data 'notes.md') 'keep document'
     Set-Content -LiteralPath (Join-Path $data 'ui-settings.json') '{"theme":"dark"}'
-    @{workspace=$data;schema=1}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $dir 'installation.json') -Encoding UTF8
+    $id=[guid]::NewGuid().ToString()
+    @{workspace=$data;install_dir=$dir;installation_id=$id;schema=2}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $dir 'installation.json') -Encoding UTF8
+    @{schema=1;installations=@(@{id=$id;install_dir=$dir})}|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $data '.mdreader-installations.json') -Encoding UTF8
     Copy-Item -LiteralPath $script -Destination $dir
     Copy-Item -LiteralPath (Join-Path $root 'release\app\卸载.cmd') -Destination $dir
     return $dir
@@ -29,7 +31,7 @@ function Link($name,$target,$dir) {
 }
 function Reject($dir,$extra=@{}) {
     $failed=$false
-    try { & $script -InstallDir $dir -Yes -NoPause -ShortcutDir $desktop -StartMenuDir $startMenu @extra } catch { $failed=$true }
+    try { & $script -InstallDir $dir -Yes -DeleteData -NoPause -ShortcutDir $desktop -StartMenuDir $startMenu @extra } catch { $failed=$true }
     Assert $failed "Unsafe uninstall accepted: $dir"
     Assert (Test-Path -LiteralPath $dir) 'Rejected uninstall changed the directory'
 }
@@ -47,21 +49,50 @@ try {
     Assert ((Test-Path -LiteralPath $mine) -and (Test-Path -LiteralPath $dir)) 'Cancellation removed files'
     # Run the actual self-deleting CMD from its own installation directory.
     Push-Location $dir
-    try { @('YES','') | & $env:ComSpec /d /c ('卸载.cmd -ShortcutDir "{0}" -StartMenuDir "{1}"' -f $desktop,$startMenu) }
+    try { @('DELETE','') | & $env:ComSpec /d /c ('卸载.cmd -ShortcutDir "{0}" -StartMenuDir "{1}"' -f $desktop,$startMenu) }
     finally { Pop-Location }
     Assert ($LASTEXITCODE -eq 0) 'Double-click uninstall wrapper failed'
     Assert (-not (Test-Path -LiteralPath $dir)) 'Installation directory remains'
     Assert (-not (Test-Path -LiteralPath $mine)) 'Own desktop shortcut remains'
     Assert (-not (Test-Path -LiteralPath $menu)) 'Own Start menu shortcut remains'
     Assert (Test-Path -LiteralPath $other) 'Other installation shortcut deleted'
-    Assert ((Get-Content -LiteralPath ($dir+' data\notes.md')) -eq 'keep document') 'Document deleted'
-    Assert ((Get-Content -LiteralPath ($dir+' data\ui-settings.json')) -eq '{"theme":"dark"}') 'Settings changed'
+    Assert (-not (Test-Path -LiteralPath ($dir+' data'))) 'Data directory remains'
     $dir=Fixture 'personal files'
     Set-Content -LiteralPath (Join-Path $dir 'my-notes.md') 'personal'
-    & $script -InstallDir $dir -Yes -NoPause -ShortcutDir $desktop -StartMenuDir $startMenu
-    Assert ((Get-Content -LiteralPath (Join-Path $dir 'my-notes.md')) -eq 'personal') 'Unrelated file removed'
+    & $script -InstallDir $dir -Yes -DeleteData -NoPause -ShortcutDir $desktop -StartMenuDir $startMenu
+    Assert (-not (Test-Path -LiteralPath $dir)) 'Full uninstall kept files inside program directory'
     Assert (-not (Test-Path -LiteralPath (Join-Path $dir 'MDReader.exe'))) 'Program still installed'
     # Damaged packages, invalid config, overlapping data and explicit purge all refuse.
+    # Regression: launching from the download package must delete the recorded targets only.
+    $dir=Fixture 'recorded destination'
+    $source=Join-Path $scratch 'download package !'
+    New-Item -ItemType Directory -Path $source | Out-Null
+    Copy-Item -LiteralPath $script,(Join-Path $root 'release\app\卸载.cmd') -Destination $source
+    Copy-Item -LiteralPath (Join-Path $dir 'installation.json') -Destination (Join-Path $source 'installed-target.json')
+    Set-Content -LiteralPath (Join-Path $source 'outside.md') 'outside'
+    Push-Location $source
+    try { @('DELETE','') | & $env:ComSpec /d /c ('卸载.cmd -ShortcutDir "{0}" -StartMenuDir "{1}"' -f $desktop,$startMenu) }
+    finally { Pop-Location }
+    Assert ($LASTEXITCODE -eq 0) 'Source wrapper failed'
+    Assert (-not (Test-Path -LiteralPath $dir)) 'Recorded program target remains'
+    Assert (-not (Test-Path -LiteralPath ($dir+' data'))) 'Recorded data target remains'
+    Assert ((Get-Content -LiteralPath (Join-Path $source 'outside.md')) -eq 'outside') 'Source package was deleted'
+    $dir=Fixture 'old command'
+    $failed=$false
+    try { & $script -InstallDir $dir -Yes -NoPause } catch { $failed=$true }
+    Assert $failed 'Legacy unattended command deleted data'
+    Assert (Test-Path -LiteralPath ($dir+' data\notes.md')) 'Refusal deleted data'
+    $dir=Fixture 'legacy record'
+    @{schema=1;workspace=($dir+' data')} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'installation.json')
+    Reject $dir
+    $dir=Fixture 'wrong association'
+    @{schema=1;installations=@(@{id=[guid]::NewGuid().ToString();install_dir=$dir})} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath ($dir+' data\.mdreader-installations.json')
+    Reject $dir
+    $dir=Fixture 'wrong program path'
+    $record=Get-Content -LiteralPath (Join-Path $dir 'installation.json') -Raw | ConvertFrom-Json
+    $record.install_dir=$source
+    $record | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'installation.json')
+    Reject $dir
     $dir=Fixture 'incomplete'
     Remove-Item -LiteralPath (Join-Path $dir 'MDReader.exe')
     Reject $dir
@@ -69,10 +100,14 @@ try {
     Set-Content -LiteralPath (Join-Path $dir 'installation.json') '{broken'
     Reject $dir
     $dir=Fixture 'inside data'
-    @{workspace=(Join-Path $dir 'notes')}|ConvertTo-Json|Set-Content (Join-Path $dir 'installation.json')
+    $record=Get-Content -LiteralPath (Join-Path $dir 'installation.json') -Raw | ConvertFrom-Json
+    $record.workspace=Join-Path $dir 'notes'
+    $record|ConvertTo-Json|Set-Content (Join-Path $dir 'installation.json')
     Reject $dir
     $dir=Fixture 'parent data'
-    @{workspace=$scratch}|ConvertTo-Json|Set-Content (Join-Path $dir 'installation.json')
+    $record=Get-Content -LiteralPath (Join-Path $dir 'installation.json') -Raw | ConvertFrom-Json
+    $record.workspace=$scratch
+    $record|ConvertTo-Json|Set-Content (Join-Path $dir 'installation.json')
     Reject $dir
     $dir=Fixture 'purge refused'
     Reject $dir @{Purge=$true}
@@ -81,10 +116,10 @@ try {
     $process=Start-Process -FilePath (Join-Path $dir 'runtime\pythonw.exe') -ArgumentList '-t 127.0.0.1' -WindowStyle Hidden -PassThru
     Reject $dir
     Stop-Process -Id $process.Id -Force; $process.WaitForExit(); $process=$null
-    & $script -InstallDir $dir -Yes -NoPause -ShortcutDir $desktop -StartMenuDir $startMenu
+    & $script -InstallDir $dir -Yes -DeleteData -NoPause -ShortcutDir $desktop -StartMenuDir $startMenu
     Assert (-not (Test-Path -LiteralPath $dir)) 'Closed application cannot uninstall'
     $failed=$false
-    try { & $script -InstallDir ([IO.Path]::GetPathRoot($scratch)) -Yes -NoPause } catch { $failed=$true }
+    try { & $script -InstallDir ([IO.Path]::GetPathRoot($scratch)) -Yes -DeleteData -NoPause } catch { $failed=$true }
     Assert $failed 'Drive root accepted'
     # CMD must preserve failure status and keep incomplete install untouched.
     $dir=Fixture 'wrapper fails'
