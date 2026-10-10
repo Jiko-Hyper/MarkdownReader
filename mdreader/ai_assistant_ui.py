@@ -20,6 +20,8 @@ class AssistantDialog:
         self.get_snapshot, self.apply_edit = get_snapshot, apply_edit
         self.get_selection, self.apply_selection = get_selection, apply_selection
         self.proposals = {name: None for name in PROVIDERS}
+        self.reviews = {name: None for name in PROVIDERS}
+        self.review_window = None
         self.selections = {name: None for name in PROVIDERS}
         self.selection_note = {name: '' for name in PROVIDERS}
         self.history = {name: [] for name in PROVIDERS}
@@ -30,6 +32,7 @@ class AssistantDialog:
         self.closed = False
         self.timer = None
         self._complete = None
+        self._failure = None
         self.refresh_timer = None
         p = palette
         self.window = tk.Toplevel(parent)
@@ -85,8 +88,11 @@ class AssistantDialog:
         self.output.configure(yscrollcommand=scroll.set)
         scroll.pack(side='right', fill='y')
         self.output.pack(side='left', fill='both', expand=True)
+        # Reserve space for input/actions before giving the transcript its space.
+        composer = tk.Frame(body, bg=p['bg'])
+        composer.pack(side='bottom', fill='x', before=transcript)
         self.include_document = tk.BooleanVar(value=False)
-        self.context_toggle = tk.Checkbutton(body, text='附上当前文档给 AI（含未保存内容）；修改需点击应用',
+        self.context_toggle = tk.Checkbutton(composer, text='附上当前文档给 AI（含未保存内容）；修改需点击应用',
                                              variable=self.include_document, bg=p['bg'], fg=p['fg'],
                                              selectcolor=p['bg'], activebackground=p['bg'])
         self.context_toggle.pack(anchor='w', pady=6)
@@ -96,13 +102,13 @@ class AssistantDialog:
         self.apply_selection_button = self.cancel_selection_button = None
         self.scope_box = None
         if get_selection is not None and apply_selection is not None:
-            self.build_selection_group(body)
-        self.label(body, '在这里输入问题（上方是对话记录）').pack(anchor='w', pady=(2, 4))
-        self.prompt = tk.Text(body, height=3, width=76, wrap='word', bg=p['side'], fg=p['fg'],
+            self.build_selection_group(composer)
+        self.label(composer, '在这里输入问题（上方是对话记录）').pack(anchor='w', pady=(2, 4))
+        self.prompt = tk.Text(composer, height=3, width=76, wrap='word', bg=p['side'], fg=p['fg'],
                               insertbackground=p['fg'], relief='flat', font=('Microsoft YaHei UI', 10), padx=8, pady=6)
         self.prompt.pack(fill='x')
         self.prompt.bind('<Control-Return>', lambda e: (self.send(), 'break')[1])
-        row = tk.Frame(body, bg=p['bg'])
+        row = tk.Frame(composer, bg=p['bg'])
         row.pack(fill='x', pady=(10, 0))
         self.send_button = self.button(row, '发送  Ctrl+Enter', self.send, True)
         self.send_button.pack(side='left')
@@ -117,7 +123,13 @@ class AssistantDialog:
         if apply_edit:
             self.apply_button.pack(side='left', padx=8)
         self.apply_button.config(state='disabled')
+        self.review_button = self.button(row, '逐项核对…', self.review_proposal)
+        if apply_edit and get_snapshot:
+            self.review_button.pack(side='left', padx=8)
+        self.review_button.config(state='disabled')
         self.button(row, '关闭', self.close).pack(side='right')
+        from .ai_recovery import Recovery
+        self.recovery = Recovery(self, composer, row)
         self.provider.set(PROVIDERS[self.settings['selected']]['label'])
         self.provider_box.bind('<<ComboboxSelected>>', self.select_provider)
         self.select_provider()
@@ -125,7 +137,9 @@ class AssistantDialog:
         self.window.update_idletasks()
         width = min(max(760, self.window.winfo_reqwidth()), self.window.winfo_screenwidth() - 50)
         height = min(self.window.winfo_reqheight(), self.window.winfo_screenheight() - 90)
-        self.window.geometry('%dx%d+%d+%d' % (width, height, max(0, parent.winfo_rootx()), max(0, parent.winfo_rooty())))
+        x = max(0, min(parent.winfo_rootx()+(parent.winfo_width()-width)//2, self.window.winfo_screenwidth()-width-20))
+        y = max(0, min(parent.winfo_rooty()+(parent.winfo_height()-height)//2, self.window.winfo_screenheight()-height-70))
+        self.window.geometry('%dx%d+%d+%d' % (width, height, x, y))
         self.window.minsize(min(width, 700), min(height, 650))
         from .display import style_titlebar
         style_titlebar(self.window, p['bg'] == '#22262d', p['bg'], p['fg'])
@@ -213,8 +227,12 @@ class AssistantDialog:
         self.paint_buttons()
         from .display import style_titlebar
         style_titlebar(self.window, p['bg'] == '#22262d', p['bg'], p['fg'])
+        if self.review_window is not None and not self.review_window.closed:
+            self.review_window.apply_theme(palette)
 
     def select_provider(self, event=None):
+        self.dismiss_review()
+        self.recovery.switch()
         profile = self.settings['profiles'][self.name]
         self.model.set(profile['model'])
         self.model_box.configure(values=profile.get('models') or [])
@@ -222,7 +240,6 @@ class AssistantDialog:
         self.base.set(profile['base_url'])
         self.key.set('')
         self.key_hint.config(text='密钥已加密保存；留空保留，填入新密钥可更换。' if profile['has_key'] else '请粘贴此服务商的 API Key。密钥在本机加密保存。')
-        self.include_document.set(False)
         self.render_history()
         if self.refresh_timer:
             self.window.after_cancel(self.refresh_timer)
@@ -281,16 +298,19 @@ class AssistantDialog:
         if self.scope_box is not None:
             self.scope_box.config(state='disabled' if value else 'readonly')
         self.apply_button.config(state='normal' if not value and self.proposals[self.name] else 'disabled')
+        self.paint_review_buttons()
         self.insert_button.config(state='disabled' if value or self.proposals[self.name] else 'normal')
         self.paint_selection_buttons()
+        self.recovery.refresh()
         self.paint_buttons()
 
-    def work(self, fn, complete):
+    def work(self, fn, complete, failure=None):
         if self.busy:
             return
         self.set_busy(True)
         self.status_label.config(text='正在连接，请稍候…')
         self._complete = complete
+        self._failure = failure
         results = self.queue
         def worker():
             try:
@@ -305,11 +325,15 @@ class AssistantDialog:
         try:
             result, error = self.queue.get_nowait()
             complete, self._complete = self._complete, None
+            failure, self._failure = self._failure, None
             self.set_busy(False)
             if error:
-                self.status_label.config(text=error)
-                self.feedback[self.name] = '操作失败：' + error + '\n问题已保留，可以修改设置后重新发送。'
-                self.render_history()
+                if failure is not None:
+                    failure(error)
+                else:
+                    self.status_label.config(text=error)
+                    self.feedback[self.name] = '操作失败：' + error + '\n输入仍保留，可修改设置后再试。'
+                    self.render_history()
             else:
                 complete(result)
         except queue.Empty:
@@ -418,7 +442,7 @@ class AssistantDialog:
             if intent == 'custom':
                 self.prompt.delete('1.0', 'end')
             self.render_history()
-        self.work(lambda: store.chat(payload), done)
+        self.recovery.start(lambda: store.chat(payload), done, 'selection', before)
 
     def apply_selection_proposal(self):
         proposal = self.selections[self.name]
@@ -466,7 +490,9 @@ class AssistantDialog:
             return
         name = self.name
         store = self.store
+        self.dismiss_review()
         self.proposals[name] = None
+        self.reviews[name] = None
         edit_enabled = snapshot is not None
         messages = self.history[name] + [{'role': 'user', 'content': prompt}]
         self.feedback[name] = '你（等待回复）：\n' + prompt + '\n\n正在等待模型回复…'
@@ -485,8 +511,8 @@ class AssistantDialog:
             self.render_history()
             self.status_label.config(text='请查看修改内容，点击「应用修改」写入当前文档。' if self.proposals[name]
                                      else result.get('note') or '回复完成，可复制或插入文档。')
-        self.work(lambda: store.chat({'provider': name, 'messages': messages, 'context': context,
-                                     'edit': edit_enabled}), done)
+        self.recovery.start(lambda: store.chat({'provider': name, 'messages': messages, 'context': context,
+                                     'edit': edit_enabled}), done, 'chat', snapshot)
 
     def paint_selection_buttons(self):
         """有建议且不忙时才能应用/取消；没有建议时两个按钮都点不动。"""
@@ -510,15 +536,19 @@ class AssistantDialog:
         self.output.config(state='disabled')
         self.output.see('end')
         self.apply_button.config(state='normal' if self.proposals[self.name] and not self.busy else 'disabled')
+        self.paint_review_buttons()
         self.insert_button.config(state='disabled' if self.busy or self.proposals[self.name] else 'normal')
         self.paint_selection_buttons()
         self.paint_buttons()
 
     def clear_chat(self):
+        self.dismiss_review()
+        self.recovery.clear()
         self.history[self.name] = []
         self.replies[self.name] = ''
         self.feedback[self.name] = ''
         self.proposals[self.name] = None
+        self.reviews[self.name] = None
         self.selections[self.name] = None
         self.selection_note[self.name] = ''
         self.render_history()
@@ -526,6 +556,16 @@ class AssistantDialog:
     def apply_proposal(self):
         proposal = self.proposals[self.name]
         if self.busy or proposal is None or self.apply_edit is None:
+            return
+        review = self.reviews[self.name]
+        if review is not None:
+            try:
+                review.refresh(self.get_snapshot())
+                review.accept(review.pending(), self.get_snapshot, self.apply_edit)
+            except ValueError as exc:
+                self.status_label.config(text=str(exc))
+                return
+            self.review_feedback(self.name)
             return
         try:
             self.apply_edit(*proposal)
@@ -536,6 +576,46 @@ class AssistantDialog:
         self.feedback[self.name] = '修改已应用，可在编辑器撤销；保存后才会写入文件。'
         self.render_history()
         self.status_label.config(text=self.feedback[self.name])
+
+    def paint_review_buttons(self):
+        proposal = self.proposals[self.name]
+        review = self.reviews[self.name]
+        self.apply_button.configure(text='采用全部待核对' if review is not None else '应用修改')
+        self.review_button.configure(state='normal' if proposal and not self.busy else 'disabled')
+        if review is not None:
+            self.apply_button.configure(state='normal' if review.pending() and not self.busy else 'disabled')
+
+    def dismiss_review(self):
+        if self.review_window is not None:
+            self.review_window.close()
+
+    def review_feedback(self, name):
+        review = self.reviews[name]
+        self.feedback[name] = ('逐项核对：已采用 %d 处，保留原文 %d 处，待核对 %d 处。\n'
+                               '已采用的修改可在编辑器撤销；再次打开核对会同步状态。保存后才写入文件。' %
+                               (len(review.accepted), len(review.retained), len(review.pending())))
+        self.render_history()
+        self.status_label.configure(text=self.feedback[name])
+
+    def review_proposal(self):
+        name = self.name
+        proposal = self.proposals[name]
+        if self.busy or proposal is None or self.get_snapshot is None or self.apply_edit is None:
+            return
+        if self.review_window is not None and not self.review_window.closed:
+            self.review_window.window.lift()
+            return
+        def show(review):
+            from .ai_review_ui import ReviewDialog
+            self.reviews[name] = review
+            self.review_window = ReviewDialog(self, review, lambda: self.review_feedback(name))
+            self.status_label.configure(text='请选择要采用或保留的修改块。')
+        if self.reviews[name] is not None:
+            show(self.reviews[name])
+        else:
+            from .ai_changes import Review
+            # Matching repeated lines may take time; keep it off the Tk thread.
+            self.work(lambda: Review(*proposal), show)
 
     def copy_reply(self):
         reply = self.replies[self.name]
@@ -554,11 +634,16 @@ class AssistantDialog:
 
     def close(self):
         self.closed = True
+        if self.review_window is not None:
+            self.review_window.close()
         self._complete = None
+        self._failure = None
+        self.recovery.close()
         self.get_document = self.insert_reply = None
         self.get_snapshot = self.apply_edit = None
         self.get_selection = self.apply_selection = None
         self.proposals.clear()
+        self.reviews.clear()
         self.selections.clear()
         for name in PROVIDERS:
             self.selection_note[name] = ''

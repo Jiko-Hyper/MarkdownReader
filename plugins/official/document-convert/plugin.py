@@ -78,6 +78,11 @@ class Conversion:
     def clean_html(self, markup, *, embed=False, saved_images=False):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(markup, "html.parser")
+        # Word emits line breaks as <br>; inside code they are literal newlines,
+        # not Markdown's two-space hard break (which would change source code).
+        for pre in soup.find_all("pre"):
+            for br in pre.find_all("br"):
+                br.replace_with("\n")
         for node in list(soup.find_all(["script", "style", "iframe", "object", "embed", "head", "form"])):
             if node.parent is not None:
                 node.decompose()
@@ -117,28 +122,8 @@ class Conversion:
                           keep_inline_images_in=["td", "th"], table_infer_header=True).strip() + "\n"
 
     def pdf(self):
-        from pypdf import PdfReader
-        reader = PdfReader(self.source)
-        if reader.is_encrypted and not reader.decrypt(""):
-            raise ValueError("PDF 已加密，请先解除密码后重试")
-        if len(reader.pages) > 1000:
-            raise ValueError("PDF 超过 1000 页，请拆分后转换")
-        pages = []
-        found = False
-        for index, page in enumerate(reader.pages, 1):
-            self.task.progress("提取 PDF 第 %d 页" % index, int(index / len(reader.pages) * 85))
-            text = (page.extract_text() or "").strip()
-            found = found or bool(text)
-            if not text:
-                text = "[此页没有可提取文字，可能需要 OCR]"
-                self.warn("部分页面没有文字层，需要 OCR；输出保留了页码提示。")
-            # Escape literal prose instead of accidentally inventing Markdown structure.
-            text = re.sub(r"([\\`*_{}\[\]<>#+.!|~-])", r"\\\1", text)
-            pages.append("<!-- 第 %d 页 -->\n\n%s" % (index, text))
-        if not found:
-            raise ValueError("PDF 没有可提取文字，可能是扫描版；请先做 OCR")
-        self.warn("PDF 按文字层提取：多栏阅读顺序、表格、公式和图片需要人工核对；不包含 OCR。")
-        return "\n\n---\n\n".join(pages) + "\n"
+        from pdf_layout import convert
+        return convert(self)
 
     def docx(self):
         import mammoth
@@ -154,7 +139,8 @@ class Conversion:
                 self.warn("部分 Word 图片未转换：" + str(exc))
                 return {"src": "", "alt": "不支持的 Word 图片"}
         with self.source.open("rb") as stream:
-            result = mammoth.convert_to_html(stream, convert_image=mammoth.images.img_element(image_handler))
+            result = mammoth.convert_to_html(stream, convert_image=mammoth.images.img_element(image_handler),
+                style_map="p[style-name='Code'] => pre:fresh\np[style-name='Quote'] => blockquote > p:fresh\np[style-name='Intense Quote'] => blockquote > p:fresh")
         for message in result.messages:
             self.warn(str(message.message))
         self.warn("Word 常用标题、列表、表格与图片已转换；分页、文本框和复杂公式可能无法保留。")
@@ -179,12 +165,21 @@ class Conversion:
 
     def run(self, direction):
         self.task.progress("读取源文档", 5)
-        if direction == "pdf-md":
+        if direction == "scan-md":
+            from scan_ocr import convert
+            text = convert(self)
+        elif direction == "pdf-md":
             text = self.pdf()
         elif direction == "docx-md":
             text = self.docx()
         elif direction == "html-md":
             text = self.to_markdown(read_text(self.source))
+        elif direction == "image-md":
+            from image_ocr import convert
+            text = convert(self)
+        elif direction == "photo-md":
+            from photo_ocr import convert
+            text = convert(self)
         else:
             text = self.markdown()
         if not text.strip():
@@ -209,3 +204,15 @@ def md_to_html(task):
 
 def html_to_md(task):
     return Conversion(task).run("html-md")
+
+
+def image_to_md(task):
+    return Conversion(task).run("image-md")
+
+
+def photo_to_md(task):
+    return Conversion(task).run("photo-md")
+
+
+def scan_to_md(task):
+    return Conversion(task).run("scan-md")

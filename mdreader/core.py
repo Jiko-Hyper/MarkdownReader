@@ -37,7 +37,7 @@ from . import tables as TB
 from .storage import atomic_write, is_within, safe_join
 
 APP_NAME = "MDReader"
-APP_VERSION = "0.4.4"
+APP_VERSION = "0.4.11"
 WS_DIRNAME = ".mdreader"
 PROJECT_FILE = "project.json"
 DOC_EXTS = (".md", ".markdown", ".mdown", ".mkd", ".txt")
@@ -1712,11 +1712,20 @@ class Api:
             outcome = self._plugin_wait(task, 0.01)
             if outcome['pending']:
                 return outcome
+            if getattr(task, '_export_preview', False) and payload.get('commit'):
+                if not hasattr(task, '_preview_revision'):
+                    raise PL.PluginError('请先生成并查看预览，再确认保存')
+                checked = ws.plugins.tasks.result(task.id)
+                if D.revision(checked['path']) != task._preview_revision:
+                    raise PL.PluginError('预览文件已变化，请重新生成；目标未改动')
+                task._export_preview = False
             return self._finish_plugin_export(task, outcome, context)
         plan = self._export_plan(payload)
         command = plan["command"]
         if command is None:
             raise PL.PluginError("没有可用的导出插件命令：请先安装并启用 PDF 或 Word 导出插件")
+        if payload.get('defer_commit') and command['extension'] != 'pdf':
+            raise PL.PluginError('导出前页面预览目前只支持 PDF')
         snapshot = plan["snapshot"]
         report = plan["preflight"]
         dest = plan["dest"]
@@ -1748,6 +1757,9 @@ class Api:
             entry=payload.get("entry") or self.mode, markdown=snapshot["markdown"],
             options=options, input_files=files)
         context = (dest, target_before, report, plan['source'], command)
+        if payload.get('defer_commit'):
+            task._export_preview = True
+            task._export_context = context
         if payload.get('background'):
             task._export_context = context
             return {'pending': True, 'task': task.view()}
@@ -1759,12 +1771,22 @@ class Api:
     def _finish_plugin_export(self, task, outcome, context):
         dest, target_before, report, source, command = context
         ws = self.ws
+        if getattr(task, '_export_preview', False):
+            checked = ws.plugins.tasks.result(task.id)
+            task._preview_revision = D.revision(checked['path'])
+            return {'pending': False, 'preview_ready': True, 'task': outcome['task'],
+                    'preview_path': checked['path'], 'path': dest,
+                    'warnings': checked.get('warnings', []), 'preflight': report, 'source': source}
         # 确认之后目标要是被外部换过，就重新确认，不覆盖刚出现的新版本
         if D.revision(dest) != target_before:
             return {"ok": False, "conflict": True, "revision": D.revision(dest), "path": dest,
                     "error": "导出目标在插件运行期间被改动，请确认后重试：%s" % dest}
         # 导出用的是启动时的快照：源文档之后再被编辑不影响这次导出的内容
-        result = ws.plugins.tasks.commit_export(task.id, dest)
+        result = ws.plugins.tasks.commit_export(task.id, dest, artifact_revision=getattr(task, '_preview_revision', None))
+        if hasattr(task, '_export_context'):
+            del task._export_context
+        if hasattr(task, '_preview_revision'):
+            ws.plugins.tasks.discard(task.id)
         return {"pending": False, "task": outcome["task"], "path": result["path"],
                 "bytes": result["bytes"], "extension": result["extension"],
                 "media_type": result["media_type"], "warnings": result["warnings"],
@@ -2138,8 +2160,10 @@ class Api:
             # Completed background exports still have not been committed.
             if hasattr(task, '_export_context'):
                 del task._export_context
-            return {"ok": True, "task": ws.plugins.tasks.cancel(
-                payload.get("id") or "", payload.get("reason") or "用户取消")}
+            view = ws.plugins.tasks.cancel(payload.get("id") or "", payload.get("reason") or "用户取消")
+            if (getattr(task, '_export_preview', False) or hasattr(task, '_preview_revision')) and task.state == 'done':
+                ws.plugins.tasks.discard(task.id)
+            return {"ok": True, "task": view}
 
         if path == "/api/plugins/command":
             command = payload.get("command") or self._first_command(payload.get("capability") or "")

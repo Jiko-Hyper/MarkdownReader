@@ -12,6 +12,7 @@ from mdreader.conversion import convert_file
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "plugins/dependencies"))
+sys.path.append(str(ROOT / "plugins/conversion-dependencies"))
 
 
 class ConversionTests(unittest.TestCase):
@@ -20,17 +21,14 @@ class ConversionTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         cls.root = Path(cls.temp.name)
         cls.ws = core.Workspace(str(cls.root / "workspace"))
-        cls.ws.plugins.install(str(ROOT / "plugins/packages/mdreader.document-convert-1.0.0.zip"))
+        cls.ws.plugins.install(str(ROOT / "plugins/packages/mdreader.document-convert-1.4.0.zip"))
         cls.ws.plugins.enable("mdreader.document-convert")
-        cls.deps = cls.ws.plugins.entry("mdreader.document-convert")["path"]
-        sys.path.insert(0, cls.deps)
         cls.commands = {c["format"]: c["command"] for c in cls.ws.plugins.commands()
                         if c["plugin"] == "mdreader.document-convert"}
 
     @classmethod
     def tearDownClass(cls):
         cls.ws.plugins.shutdown()
-        sys.path.remove(cls.deps)
         cls.temp.cleanup()
 
     def setUp(self):
@@ -193,7 +191,7 @@ class ConversionTests(unittest.TestCase):
         owner.plugin_commands = lambda cap: MarkdownWindow.plugin_commands(owner, cap)
         with patch("mdreader.conversion.show_conversion") as show:
             entries = MarkdownWindow.plugin_menu_entries(owner)
-            self.assertEqual(len(entries["conversions"]), 4)
+            self.assertEqual(len(entries["conversions"]), 7)
             for label, action in entries["conversions"]:
                 action()
                 self.assertEqual(show.call_args.args[1]["title"], label)

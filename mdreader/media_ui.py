@@ -1,5 +1,5 @@
 """Themed image width controls; source images are never destructively resized."""
-def run_job(owner, action, cancel=None):
+def run_job(owner, action, cancel=None, status=None):
     """Keep Tk painting and scrolling while a worker waits for the plugin process."""
     import queue
     import threading
@@ -16,14 +16,15 @@ def run_job(owner, action, cancel=None):
         tk, pal = owner._tk, owner.pal
         dialog = tk.Toplevel(owner.root)
         dialog.withdraw()
-        dialog.title('正在导出')
+        dialog.title('正在识别扫描文档' if status else '正在导出')
         dialog.transient(owner.root)
         dialog.configure(bg=pal['bg'])
-        tk.Label(dialog, text='正在生成文件，可取消本次导出', bg=pal['bg'], fg=pal['fg']).pack(padx=28, pady=20)
+        label = tk.Label(dialog, text='正在生成文件，可取消本次操作', bg=pal['bg'], fg=pal['fg'])
+        label.pack(padx=28, pady=20)
         def request_cancel():
             cancel.set()
             button.configure(text='正在取消…', state='disabled')
-        button = tk.Button(dialog, text='取消导出', command=request_cancel,
+        button = tk.Button(dialog, text='取消识别' if status else '取消导出', command=request_cancel,
                            bg=pal['button'], fg=pal['fg'], relief='flat', padx=16, pady=8)
         button.pack(pady=(0, 20))
         dialog.protocol('WM_DELETE_WINDOW', request_cancel)
@@ -40,6 +41,8 @@ def run_job(owner, action, cancel=None):
         except Exception as exc:
             results.put((False, exc))
     def poll():
+        if status is not None and dialog is not None and dialog.winfo_exists():
+            label.configure(text=status())
         if results.empty():
             owner.root.after(25, poll)
         else:

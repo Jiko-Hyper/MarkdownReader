@@ -18,6 +18,12 @@ Tabbed editing, tables, math, and Word/PDF export — available offline.
 
 > This is the English documentation. The application and installer currently use Simplified Chinese; multilingual UI support is planned.
 
+## 0.4.11: bundled offline scan recognition
+
+The full Windows ZIP includes a standalone Python runtime and local scan models. Scanned PDFs become editable Markdown and LaTeX, with page selection, cancellation, original-page links and formula review notes. Results require manual review; 98% recognition accuracy has not been established. Photo OCR, export styles/preflight, PDF preview, AI change review and request recovery are included.
+
+Extract the complete ZIP and run `MDReader.exe`, or use `安装到桌面.cmd` to choose installation folders. Save and close the previous version first. See [third-party scan components](docs/THIRD_PARTY_SCAN.md) for dependencies and notices.
+
 ## 0.4.2: taskbar identity fix
 
 The Windows release now declares its own application identity, purple MD icon, and relaunch command. Pinning a running window launches `MDReader.exe` instead of the internal Python interpreter. Installer-created shortcuts use the same identity; source development uses a separate identity.

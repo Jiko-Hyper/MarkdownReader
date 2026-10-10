@@ -30,6 +30,28 @@ class ExportEntryTests(fixtures.PluginTestCase):
     window = fixtures.PluginDesktopTests.window
     open_document = fixtures.PluginDesktopTests.open_document
 
+    def test_technical_style_is_passed_to_existing_export_flow(self):
+        win = self.window()
+        win.ws.plugins.trust = core.PL.TrustRegistry()
+        export_ui.prepare_format(win.ws.plugins, 'docx')
+        self.open_document()
+        win._export_style = win._tk.StringVar(win.root, 'technical')
+        with mock.patch.object(core, '_dialog_save', return_value=str(Path(self.base)/'style.docx')), \
+             mock.patch.object(win, '_export_plan_call', wraps=win._export_plan_call) as plan:
+            export_ui.choose_format(win, 'docx')
+        self.assertEqual(plan.call_args.args[0]['options']['style'], 'technical')
+        self.assertTrue((Path(self.base)/'style.docx').is_file())
+
+    def test_old_plugin_requires_explicit_update_for_technical_style(self):
+        win = self.window()
+        win._export_style = win._tk.StringVar(win.root, 'technical')
+        with mock.patch.object(win.ws.plugins, 'list_plugins', return_value=[{
+                'id': 'mdreader.export-pdf', 'version': '1.0.4'}]), \
+             mock.patch.object(export_ui, 'setup') as setup:
+            options = export_ui.export_options(win, {'plugin': 'mdreader.export-pdf', 'extension': 'pdf'})
+        self.assertIsNone(options)
+        setup.assert_called_once_with(win, 'pdf', update=True)
+
     def test_export_entry_remains_visible_at_minimum_window_width(self):
         win = self.window()
         width, height = win.root.minsize()

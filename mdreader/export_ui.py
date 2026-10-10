@@ -27,11 +27,11 @@ def bundled_package(plugin_id, folder=None):
     return max(candidates)[1]
 
 
-def prepare_format(store, extension):
+def prepare_format(store, extension, update=False):
     """Only install the requested official format; install still verifies its hash."""
     _, plugin_id = FORMATS[extension]
     row = next((item for item in store.list_plugins() if item['id'] == plugin_id), None)
-    if not row or not row['installed']:
+    if update or not row or not row['installed']:
         store.install(str(bundled_package(plugin_id)))
     result = store.enable(plugin_id)
     if not result.get('enabled') or result.get('rolled_back'):
@@ -51,10 +51,15 @@ def window(owner, title):
     return dialog
 
 
-def reveal(owner, dialog):
+def reveal(owner, dialog, size=None):
     dialog.update_idletasks()
-    dialog.geometry('+%d+%d' % (max(0, owner.root.winfo_rootx() + (owner.root.winfo_width()-dialog.winfo_reqwidth())//2),
-                              max(0, owner.root.winfo_rooty() + (owner.root.winfo_height()-dialog.winfo_reqheight())//2)))
+    width, height = size or (dialog.winfo_reqwidth(), dialog.winfo_reqheight())
+    x = max(0, owner.root.winfo_rootx() + (owner.root.winfo_width()-width)//2)
+    y = max(0, owner.root.winfo_rooty() + (owner.root.winfo_height()-height)//2)
+    if size:
+        x = min(x, max(0, dialog.winfo_screenwidth()-width))
+        y = min(y, max(0, dialog.winfo_screenheight()-height))
+    dialog.geometry('+%d+%d' % (x, y))
     from .display import style_titlebar
     style_titlebar(dialog, owner.dark, owner.pal['bg'], owner.pal['fg'])
     dialog.deiconify()
@@ -77,12 +82,12 @@ def button(owner, parent, text, command):
     return widget
 
 
-def setup(owner, extension):
+def setup(owner, extension, update=False):
     title, plugin_id = FORMATS[extension]
     installed = any(row['id'] == plugin_id and row['installed'] for row in owner.ws.plugins.list_plugins())
     dialog = window(owner, '启用 %s 导出' % title)
-    status = label(owner, dialog, ('%s 导出尚未启用。' % title) +
-                   ('启用已有插件即可使用。' if installed else '可安装并启用随软件提供的对应插件。') +
+    status = label(owner, dialog, ('所选样式需要导出插件 1.0.5 或更新版本。' if update else '%s 导出尚未启用。' % title) +
+                   ('可更新随软件提供的对应插件。' if update else ('启用已有插件即可使用。' if installed else '可安装并启用随软件提供的对应插件。')) +
                    '\n离线使用，不需要配置 AI。安装完成后请再次选择要导出的文档。')
     actions = owner._tk.Frame(dialog, bg=owner.pal['bg'])
     actions.pack(padx=15, pady=(0, 16))
@@ -90,7 +95,7 @@ def setup(owner, extension):
         from .media_ui import run_job
         enable.configure(state='disabled')
         try:
-            run_job(owner, lambda: prepare_format(owner.ws.plugins, extension))
+            run_job(owner, lambda: prepare_format(owner.ws.plugins, extension, update=update))
         except Exception as exc:
             if dialog.winfo_exists():
                 status.configure(text='无法启用：%s\n可从插件管理检查原因或安装官方本地包。' % exc)
@@ -100,7 +105,7 @@ def setup(owner, extension):
         if dialog.winfo_exists():
             status.configure(text='%s 导出已就绪。关闭此窗口，选择文档后再次点击“导出”。' % title)
     button(owner, actions, '插件管理', owner.manage_plugins)
-    enable = button(owner, actions, '启用插件' if installed else '安装并启用', prepare)
+    enable = button(owner, actions, '更新并启用' if update else ('启用插件' if installed else '安装并启用'), prepare)
     button(owner, actions, '关闭', dialog.destroy)
     return reveal(owner, dialog)
 
@@ -122,6 +127,16 @@ def show_menu(owner):
     current = owner.cur_loose or owner.cur_doc or {}
     name = current.get('name') or current.get('file') or '未保存文档'
     popup.add_command(label='当前文档：' + os.path.basename(name), state='disabled')
+    if not hasattr(owner, '_export_style'):
+        owner._export_style = owner._tk.StringVar(owner.root, 'report')
+    for value, title in [('report', '简洁报告 · 清晰标题与舒展正文'),
+                         ('technical', '技术文档 · 紧凑表格与代码底色')]:
+        popup.add_radiobutton(label=title, value=value, variable=owner._export_style)
+    popup.add_separator()
+    if not hasattr(owner, '_pdf_preview'):
+        owner._pdf_preview = owner._tk.BooleanVar(owner.root, False)
+    popup.add_checkbutton(label='PDF 保存前预览页面', variable=owner._pdf_preview)
+    popup.add_separator()
     for extension, (title, _) in FORMATS.items():
         popup.add_command(label='导出为 %s…' % title,
                           command=lambda ext=extension: choose_format(owner, ext))
@@ -129,6 +144,20 @@ def show_menu(owner):
         popup.tk_popup(owner.btn_export.winfo_rootx(), owner.btn_export.winfo_rooty()+owner.btn_export.winfo_height())
     finally:
         popup.grab_release()
+
+
+def export_options(owner, command):
+    plugin_id = command.get('plugin')
+    if plugin_id not in {item[1] for item in FORMATS.values()}:
+        return {}
+    style = owner._export_style.get() if hasattr(owner, '_export_style') else 'report'
+    if style == 'technical':
+        row = next((row for row in owner.ws.plugins.list_plugins() if row['id'] == plugin_id), {})
+        version = tuple(int(part) for part in (row.get('version') or '0').split('.'))
+        if version < (1, 0, 5):
+            setup(owner, command['extension'], update=True)
+            return None
+    return {'style': style}
 
 
 def completed(owner, path, source, warnings):

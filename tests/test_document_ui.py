@@ -165,6 +165,18 @@ class DocumentUiTests(unittest.TestCase):
         shown.assert_called_once_with()
         self.assertEqual(len(self.win.ws.recovery.list()), 1)
 
+    def test_startup_does_not_offer_current_session_edits(self):
+        """Fresh edits must not be mistaken for a previous crashed session."""
+        import tkinter as tk
+        self.open_document()
+        self.win.ws.recovery.save(str(self.path), "本次编辑", str(self.path), "missing")
+        done = tk.BooleanVar(master=self.win.root, value=False)
+        self.win.root.after(650, lambda: done.set(True))
+        with mock.patch.object(self.win, "show_recovery") as shown:
+            self.win.root.wait_variable(done)
+        shown.assert_not_called()
+        self.assertEqual(len(self.win.ws.recovery.list()), 1)
+
     # -- B02 冲突分支 ----------------------------------------------------
     def test_conflict_cancel_keeps_both_versions(self):
         self.open_document()

@@ -396,6 +396,21 @@ def image_info(task, token):
     return path, max(16, min(requested, 4096)) * .75, height / width
 
 
+PRINT_STYLES = {
+    'report': {'headings': (20, 16, 14, 12, 11, 10.5), 'color': '1F2328',
+               'header': 'EEF2F7', 'after': 8, 'leading': 17, 'table_pt': 10},
+    'technical': {'headings': (19, 15, 13, 12, 11, 10.5), 'color': '214E76',
+                  'header': 'E5EEF5', 'after': 5, 'leading': 15, 'table_pt': 9},
+}
+
+
+def print_style(task):
+    key = task.options.get('style', 'report')
+    if key not in PRINT_STYLES:
+        raise ValueError('未知导出样式：%s' % key)
+    return key, PRINT_STYLES[key]
+
+
 def docx(task):
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
@@ -403,6 +418,7 @@ def docx(task):
     from docx.oxml.ns import qn
     from docx.opc.constants import RELATIONSHIP_TYPE as RT
     document = Document()
+    style_key, design = print_style(task)
     section = document.sections[0]
     section.page_width, section.page_height = Inches(8.27), Inches(11.69)
     section.top_margin = section.bottom_margin = Inches(.8)
@@ -413,8 +429,20 @@ def docx(task):
         style.font.color.rgb = RGBColor(31, 35, 40)
         style.element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
     document.styles["Normal"].font.size = Pt(11)
-    document.styles["Normal"].paragraph_format.space_after = Pt(8)
+    document.styles["Normal"].paragraph_format.space_after = Pt(design['after'])
     document.styles["Normal"].paragraph_format.line_spacing = 1.2
+    for level, size in enumerate(design['headings'], 1):
+        heading_style = document.styles['Heading %d' % level]
+        heading_style.font.size = Pt(size)
+        heading_style.font.color.rgb = RGBColor.from_string(design['color'])
+        heading_style.paragraph_format.space_before = Pt(14 if level < 3 else 10)
+        heading_style.paragraph_format.space_after = Pt(6)
+        heading_style.paragraph_format.keep_with_next = True
+
+    def shade(element, fill):
+        node = OxmlElement('w:shd')
+        node.set(qn('w:fill'), fill)
+        element.append(node)
     deficit = {}
     formulas = task.options.get("formulas") or {}
     degraded = []
@@ -510,7 +538,13 @@ def docx(task):
             for row_index, row in enumerate(rows):
                 cells = table.add_row().cells
                 for col, tokens in enumerate(row):
-                    inline(cells[col].paragraphs[0], tokens, 460 / len(cells), heading=row_index == 0)
+                    paragraph = cells[col].paragraphs[0]
+                    paragraph.paragraph_format.space_after = Pt(3)
+                    inline(paragraph, tokens, 460 / len(cells), heading=row_index == 0)
+                    for run in paragraph.runs:
+                        run.font.size = Pt(design['table_pt'])
+                    if row_index == 0:
+                        shade(cells[col]._tc.get_or_add_tcPr(), design['header'])
                 if row_index == 0:
                     prop = table.rows[0]._tr.get_or_add_trPr()
                     prop.append(OxmlElement("w:tblHeader"))
@@ -519,6 +553,9 @@ def docx(task):
             document.add_paragraph()
         elif block["type"] == "code":
             paragraph = document.add_paragraph()
+            if style_key == 'technical':
+                shade(paragraph._p.get_or_add_pPr(), 'F3F5F7')
+            paragraph.paragraph_format.line_spacing = 1.1
             for family, piece in split_runs(block["text"].rstrip("\n"), CODE_FONT, False, deficit, CODE_FALLBACKS):
                 run = paragraph.add_run(piece)
                 run.font.size = Pt(9)
@@ -586,16 +623,22 @@ def pdf(task):
     from reportlab.lib import colors
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable
     from reportlab.lib.pagesizes import A4
+    style_key, design = print_style(task)
     media_width = A4[0] - 96 - INLINE_IMAGE_INSET
     base, registered = _pdf_fonts()
     root = registered[base[0]][0]
     deficit = {}
-    normal = ParagraphStyle("body", fontName=root, fontSize=11, leading=17, autoLeading="max",
-                            spaceAfter=9, wordWrap="CJK", splitLongWords=True)
+    normal = ParagraphStyle("body", fontName=root, fontSize=11, leading=design['leading'], autoLeading="max",
+                            spaceAfter=design['after'], wordWrap="CJK", splitLongWords=True)
     # ReportLab 的 CJK 折行遇到“文本为空的图片片段”会执行 ord("") 直接抛错：
     # 图片或公式比该行剩余宽度长时，PDF 会整份导不出来。含图片/公式的段落改用
     # 通用折行（长段中文仍由 splitLongWords 逐字折行），纯文字段落保持 CJK 折行。
     media = ParagraphStyle("body-media", parent=normal, wordWrap=None)
+    code_style = ParagraphStyle('code', parent=normal, fontSize=9, leading=13, spaceAfter=3,
+                               backColor=colors.HexColor('#F3F5F7') if style_key == 'technical' else None)
+    cell_style = ParagraphStyle('cell', parent=normal, fontSize=design['table_pt'],
+                               leading=14, spaceAfter=3)
+    cell_media = ParagraphStyle('cell-media', parent=cell_style, wordWrap=None)
     def one_font(text, bold, nbsp=False):
         """按字形覆盖率挑字体；基础字体能画的字符不打标签，保持原有排版。"""
         pieces = []
@@ -677,7 +720,7 @@ def pdf(task):
                     # Flowables participate in the row height calculation. Inline
                     # images with a middle baseline can paint over the header.
                     cell = [Paragraph(rich(tokens, cell_width),
-                                      media if formula_media(tokens) else normal)]
+                                      cell_media if formula_media(tokens) else cell_style)]
                     for token in tokens:
                         if token.type == "image":
                             path, width, ratio = image_info(task, token)
@@ -688,19 +731,23 @@ def pdf(task):
             table = Table(rows, colWidths=[A4[0] - 96] if columns == 1 else [(A4[0] - 96) / columns] * columns,
                           repeatRows=1, hAlign="LEFT")
             table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), .5, colors.HexColor("#cbd0d9")),
-                                      ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2f7")),
+                                      ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor('#' + design['header'])),
                                       ("VALIGN", (0, 0), (-1, -1), "TOP"),
                                       ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7)]))
             story.extend([table, Spacer(1, 12)])
         elif block["type"] == "code":
             for line in block["text"].splitlines():
-                story.append(Paragraph(one_font(line, False, nbsp=True) or "&#160;", normal))
+                story.append(Paragraph(one_font(line, False, nbsp=True) or "&#160;", code_style))
         elif block["type"] == "rule": story.append(HRFlowable(width="100%", color=colors.lightgrey))
         elif block["type"] == "paragraph":
             level = block["heading"]
-            style = ParagraphStyle("p", parent=media if formula_media(block["tokens"]) else normal,
-                                   fontSize=24 - level * 2 if level else 11,
-                                   leading=30 - level * 2 if level else 17,
+            has_media = formula_media(block["tokens"])
+            # Inline formula images need baseline clearance even in compact text.
+            style = ParagraphStyle("p", parent=media if has_media else normal,
+                                   fontSize=design['headings'][level-1] if level else 11,
+                                   leading=design['headings'][level-1]+6 if level else max(design['leading'], 17 if has_media else 0),
+                                   spaceAfter=max(design['after'], 8 if has_media else 0),
+                                   textColor=colors.HexColor('#'+design['color']) if level else colors.black,
                                    keepWithNext=bool(level), leftIndent=14 * (block["depth"] + block["quote"]))
             prefix = (str(block["list"]["number"]) + ". " if block["list"]["ordered"] else "• ") if block["list"] and block["list"]["first"] else ""
             story.append(Paragraph(prefix + rich(block["tokens"], media_width), style))

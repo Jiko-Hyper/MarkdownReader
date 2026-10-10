@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 from urllib.parse import unquote, urlsplit
 
 from . import formula as FX
@@ -106,19 +107,28 @@ def detect_document(text: str) -> dict:
     """看一眼文本里有什么：图片、公式、表格、链接、代码块。预检与统计都用它。"""
     text = text or ""
     images = []
+    image_locations = {}
     for match in re.finditer(r'!\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)', text):
         source = match.group(2).strip("<>")
         if not _in_code(text, match.start()):
             images.append(source)
+            image_locations.setdefault(source, []).append(_location(text, match.start()))
     formulas = [entry for entry in FX.scan(text)]
-    tables, columns = _tables(text)
+    table_locations = _table_locations(text)
+    tables, columns = len(table_locations), [(row['columns'], row['rows']) for row in table_locations]
     links = []
+    link_locations = {}
     for match in _LINK.finditer(text):
         if _in_code(text, match.start()):
             continue
-        links.append(match.group(2).strip("<>"))
+        source = match.group(2).strip("<>")
+        links.append(source)
+        link_locations.setdefault(source, []).append(_location(text, match.start()))
     return {
         "images": images,
+        "image_locations": image_locations,
+        "link_locations": link_locations,
+        "table_locations": table_locations,
         "formulas": formulas,
         "tables": tables,
         "table_columns": columns,
@@ -162,22 +172,40 @@ def _is_external(link: str) -> bool:
 
 def _tables(text: str):
     """返回 ``(表格数, [(列数, 行数)])``；表格行按管道数统计（与渲染器的口径一致）。"""
+    details = _table_locations(text)
+    return len(details), [(row['columns'], row['rows']) for row in details]
+
+
+def _location(text, offset):
+    start = text.rfind('\n', 0, offset) + 1
+    end = text.find('\n', offset)
+    return {'line': text.count('\n', 0, offset) + 1,
+            'snippet': text[start:end if end >= 0 else len(text)].strip()[:160]}
+
+
+def _table_locations(text):
     rows, tables = text.split("\n"), []
+    offsets = []
+    position = 0
+    for row in rows:
+        offsets.append(position)
+        position += len(row) + 1
     index, count = 0, 0
     while index < len(rows):
-        if _TABLE.match(rows[index]) and index + 1 < len(rows) and _TABLE_SEP.match(rows[index + 1]):
+        if (_TABLE.match(rows[index]) and index + 1 < len(rows) and
+                _TABLE_SEP.match(rows[index + 1]) and not _in_code(text, offsets[index])):
             header = rows[index].strip().strip("|").split("|")
             body = 0
             walk = index + 2
             while walk < len(rows) and _TABLE.match(rows[walk]):
                 body += 1
                 walk += 1
-            tables.append((len(header), body))
+            tables.append(dict(_location(text, offsets[index]), columns=len(header), rows=body))
             count += 1
             index = walk
             continue
         index += 1
-    return count, tables
+    return tables
 
 
 def snapshot(*, identity: str, markdown: str, revision: str, source: str,
@@ -198,8 +226,18 @@ def snapshot(*, identity: str, markdown: str, revision: str, source: str,
 # 预检
 # --------------------------------------------------------------------------
 
-def _item(kind: str, level: str, message: str, detail: str = "") -> dict:
-    return {"kind": kind, "level": level, "message": message, "detail": detail}
+def _item(kind: str, level: str, message: str, detail: str = "", locations=None) -> dict:
+    advice = {
+        'missing_image': '检查图片路径，或将图片放回文档对应的附件目录。',
+        'outside_image': '通过打开文件夹授权图片所在目录，或复制图片到文档的附件目录。',
+        'resource_error': '检查图片文件是否可读取，修复路径或文件访问权限后重试。',
+        'remote_image': '将远程图片保存到本地附件目录，再修改图片引用。',
+        'formula': '简化不支持的公式，或接受导出保留原表达式。',
+        'wide_table': '拆分表格或减少列数，或接受导出时压缩和换行。',
+        'dead_link': '修正本地链接路径，或补回对应文件。',
+    }
+    return {"kind": kind, "level": level, "message": message, "detail": detail,
+            'advice': advice.get(kind, ''), 'locations': locations or []}
 
 
 def preflight(snapshot: dict, *, resource_reader=None, fonts=None) -> dict:
@@ -222,10 +260,12 @@ def preflight(snapshot: dict, *, resource_reader=None, fonts=None) -> dict:
     missing = []
     outside = []
     broken_reader = []
+    broken_sources = []
     for source in dict.fromkeys(found["images"]):
         if _is_external(source):
             items.append(_item("remote_image", "warn",
-                               "远程图片不会自动抓取：%s" % source))
+                               "远程图片不会自动抓取：%s" % source,
+                               locations=found['image_locations'].get(source)))
             continue
         if resource_reader is None:
             continue
@@ -240,6 +280,7 @@ def preflight(snapshot: dict, *, resource_reader=None, fonts=None) -> dict:
         except Exception as error:
             # 授权/解析这一层自己出错时要说清是“读不到”，不能谎报成“文件不存在”
             broken_reader.append("%s（%s: %s）" % (source, type(error).__name__, error))
+            broken_sources.append(source)
             continue
         if not path:
             missing.append(source)
@@ -268,6 +309,8 @@ def preflight(snapshot: dict, *, resource_reader=None, fonts=None) -> dict:
         items.append(_item("formula", "warn",
                            "有 %d 个公式暂时画不出来，导出稿里会保留原始表达式：%s"
                            % (len(broken), samples)))
+        items[-1]['locations'] = [_location(text, entry['start']) for entry in found['formulas']
+                                  if entry.get('error') or not FX.validate(entry['tex'])['ok']]
 
     # 表格：过宽只提示，不阻止（插件会换行或压缩列宽，不裁列）
     wide = [columns for columns, _body in found["table_columns"] if columns > MAX_TABLE_COLUMNS]
@@ -275,6 +318,7 @@ def preflight(snapshot: dict, *, resource_reader=None, fonts=None) -> dict:
         items.append(_item("wide_table", "warn",
                            "有 %d 张表超过 %d 列（最多 %d 列），导出时会压缩或换行"
                            % (len(wide), MAX_TABLE_COLUMNS, max(wide))))
+        items[-1]['locations'] = [row for row in found['table_locations'] if row['columns'] > MAX_TABLE_COLUMNS]
 
     # 本地链接：指向的文件不存在就是死链（只在授权范围内查）
     dead = []
@@ -299,9 +343,18 @@ def preflight(snapshot: dict, *, resource_reader=None, fonts=None) -> dict:
         items.append(_item("font", "warn",
                            "本机没有这些字体，导出时会用相近字体替代：%s" % "、".join(absent)))
 
+    source_groups = {'missing_image': missing, 'outside_image': outside,
+                     'resource_error': broken_sources, 'dead_link': dead}
+    for item in items:
+        if item['kind'] in source_groups:
+            lookup = found['link_locations'] if item['kind'] == 'dead_link' else found['image_locations']
+            item['locations'] = [location for source in source_groups[item['kind']] for location in lookup.get(source, [])]
+
     errors = [item for item in items if item["level"] == "error"]
     warnings = [item for item in items if item["level"] == "warn"]
     return {"ok": not errors, "blocked": bool(errors), "items": items,
+            'document': snapshot.get('identity', ''), 'source': snapshot.get('source', SOURCE_DISK),
+            'source_hash': hashlib.sha256(text.encode('utf-8')).hexdigest(),
             "errors": errors, "warnings": warnings,
             "stats": {"images": len(set(found["images"])), "formulas": len(found["formulas"]),
                       "tables": found["tables"], "links": len(found["links"]),
@@ -322,6 +375,8 @@ def page_options(extra: dict | None = None) -> dict:
     """打印版式选项：A4、浅色，独立于阅读主题；插件可以覆盖其中的条目。"""
     options = dict(PAGE_DEFAULTS)
     options.update({key: value for key, value in (extra or {}).items() if value is not None})
+    if options.get('style', 'report') not in ('report', 'technical'):
+        raise ExportError('导出样式只能是简洁报告或技术文档')
     return options
 
 

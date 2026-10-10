@@ -251,7 +251,7 @@ def page_machine_issues(row, number):
     return issues
 
 
-def verify_case(api, commands, folder, case, render):
+def verify_case(api, commands, folder, case, render, style='report'):
     document = folder / (case['id'] + '.md')
     original = document.read_bytes()
     info = api.loose.open_path(str(document))
@@ -261,7 +261,7 @@ def verify_case(api, commands, folder, case, render):
         row = {'id': case['id'], 'title': case['title'], 'format': ext,
                'issues': [], 'visual': '待验收', 'degradation': case.get('degradation', '')}
         request = {'command': commands[ext], 'doc': str(document),
-                   'revision': info['revision'], 'dest': str(target), 'wait': 120}
+                   'revision': info['revision'], 'dest': str(target), 'wait': 120, 'options': {'style': style}}
         if 'buffer' in case:
             request['markdown'] = case['buffer']
         try:
@@ -378,6 +378,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--no-render', action='store_true', help='Skip PDF PNGs, not content checks')
     parser.add_argument('--case', action='append', help='Run specific sample ids')
+    parser.add_argument('--style', choices=('report', 'technical'), default='report')
     args = parser.parse_args()
     cases = json.loads((FIXTURES / 'manifest.json').read_text(encoding='utf-8'))['cases']
     if args.case:
@@ -394,13 +395,13 @@ def main():
         shutil.copyfile(FIXTURES / (case['id'] + '.md'), samples / (case['id'] + '.md'))
     make_assets(samples / 'assets')
     ws = core.Workspace(str(out / 'workspace'))
-    report = {'application': core.APP_VERSION, 'python': sys.version, 'results': []}
+    report = {'application': core.APP_VERSION, 'python': sys.version, 'style': args.style, 'results': []}
     try:
         report['packages'] = install_exports(ws)
         api = core.Api(ws, str(ROOT / 'webui'))
         commands = {cmd['extension']: cmd['command'] for cmd in ws.plugins.commands()}
         for case in cases:
-            rows = verify_case(api, commands, samples, case, not args.no_render)
+            rows = verify_case(api, commands, samples, case, not args.no_render, args.style)
             report['results'].extend(rows)
             print(case['id'], [(row['format'], row['status'], row['issues']) for row in rows], flush=True)
             (out / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')

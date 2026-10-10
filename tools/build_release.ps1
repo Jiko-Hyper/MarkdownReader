@@ -17,7 +17,8 @@
 param(
     [switch]$NoZip,
     [switch]$SkipRuntime,
-    [string]$RuntimeDir = ''
+    [string]$RuntimeDir = '',
+    [switch]$WithScanRuntime
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,6 +31,15 @@ $previousWorkspace = $env:MDREADER_HOME
 
 function Write-Step($t) { Write-Host "  $t" -ForegroundColor Gray }
 function Write-Ok($t)   { Write-Host "  [OK] $t" -ForegroundColor Green }
+function Remove-BuildDirectory([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $resolvedTarget = (Resolve-Path -LiteralPath $Path).Path
+    $resolvedOutput = [IO.Path]::GetFullPath($outDir).TrimEnd('\') + '\'
+    if (-not $resolvedTarget.StartsWith($resolvedOutput, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "拒绝清理发布目录外的路径：$resolvedTarget"
+    }
+    Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+}
 
 Push-Location $root
 try {
@@ -88,12 +98,24 @@ try {
         Copy-Item -LiteralPath $source -Destination $outDir -Recurse -Force
     }
     Get-ChildItem -LiteralPath $outDir -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        ForEach-Object { Remove-BuildDirectory $_.FullName }
     Copy-Item -LiteralPath $launcher -Destination (Join-Path $outDir 'MDReader.exe') -Force
 
     # 3.2 免安装运行时
     robocopy $runtimeDir (Join-Path $outDir 'runtime') /E /XD __pycache__ /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw '运行时复制失败。' }
+
+    if ($WithScanRuntime) {
+        $scanSource = Join-Path $root 'build\scan-runtime-portable'
+        if (-not (Test-Path -LiteralPath (Join-Path $scanSource 'component-manifest.json'))) {
+            throw '请先运行 tools/prepare_scan_runtime.py 准备可移动的离线扫描组件。'
+        }
+        robocopy $scanSource (Join-Path $outDir 'scan-runtime') /E /XD __pycache__ /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw '扫描组件复制失败。' }
+    }
+    # Local reference transcriptions are not part of a public release.
+    $privateFixture = Join-Path $outDir 'tests\fixtures\ocr\photo-instructions.expected.md'
+    if (Test-Path -LiteralPath $privateFixture) { Remove-Item -LiteralPath $privateFixture -Force }
 
     # 3.3 官方离线插件：插件包（用户在工作区安装）+ 插件依赖（没装 Python 也能用）
     $pluginSource = Join-Path $root 'plugins'
@@ -152,12 +174,12 @@ MDReader $version
     if ($LASTEXITCODE -ne 0) { throw "随包插件自检失败：`n$smokeOut" }
     Write-Ok '随包插件自检通过（安装 + 启用 + 命令注册）'
 
-    Remove-Item -LiteralPath $env:MDREADER_HOME -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-BuildDirectory $env:MDREADER_HOME
     $env:MDREADER_HOME = $null
 
     # 冒烟跑过一次，清掉缓存
     Get-ChildItem -LiteralPath $outDir -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        ForEach-Object { Remove-BuildDirectory $_.FullName }
 
     # --------------------------------------------------- 5. 汇总 + 压缩
     $files = Get-ChildItem -LiteralPath $outDir -Recurse -File
@@ -170,7 +192,8 @@ MDReader $version
         $zip = Join-Path $root "release\MarkdownReader-$version-win64.zip"
         if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
         Write-Step "压缩 -> $zip"
-        Compress-Archive -Path (Join-Path $outDir '*') -DestinationPath $zip -CompressionLevel Optimal
+        & (Join-Path $runtimeDir 'python.exe') (Join-Path $root 'tools\zip_release.py') $outDir $zip
+        if ($LASTEXITCODE -ne 0) { throw '压缩或校验失败。' }
         $zipSize = (Get-Item -LiteralPath $zip).Length
         Write-Ok ("压缩包 {0:N1} MB" -f ($zipSize / 1MB))
     }

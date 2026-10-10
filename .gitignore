@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 plugins/conversion-dependencies/
+plugins/ocr-dependencies/
+plugins/photo-ocr-dependencies/
+artifacts/photo-ocr-qualification/run-*/workspace/
 .venv/
 venv/
 
@@ -21,6 +24,13 @@ installation.json
 ai-connection.json
 ai-providers.json
 .testtmp/
+build/scan-runtime*/
+artifacts/
+output/
+tmp/
+tests/fixtures/ocr/photo-instructions.expected.md
+plugins/archive/
+release/*.sha256
 *.log
 
 # ---- 编辑器 / 系统 -----------------------------------------------------
@@ -31,3 +41,5 @@ desktop.ini
 
 installed-target.json
 .mdreader-installations.json
+artifacts/conversion-qualification/run-*/workspace/
+artifacts/image-ocr-qualification/run-*/workspace/

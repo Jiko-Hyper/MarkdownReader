@@ -1,5 +1,6 @@
 """Build independently installable offline plugins for Windows Python 3.12 x64."""
 import hashlib
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -9,7 +10,10 @@ sys.path.insert(0, str(ROOT))
 from mdreader.plugins import build_package
 
 VERSION = "1.0.2"
-EXPORT_VERSION = "1.0.4"
+EXPORT_VERSION = "1.0.5"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--exports-only', action='store_true')
+args = parser.parse_args()
 names = {"image-insert": "图片插入与缩放", "export-pdf": "Markdown 转 PDF", "export-docx": "Markdown 转 Word"}
 packages = {"image-insert": ["PIL"], "export-pdf": ["PIL", "reportlab", "charset_normalizer", "markdown_it", "mdurl"],
             "export-docx": ["PIL", "docx", "lxml", "typing_extensions.py", "markdown_it", "mdurl"]}
@@ -18,6 +22,8 @@ trust = json.loads(trust_path.read_text(encoding="utf-8"))
 outdir = ROOT / "plugins/packages"
 outdir.mkdir(parents=True, exist_ok=True)
 for kind, name in names.items():
+    if args.exports_only and kind == 'image-insert':
+        continue
     pid = "mdreader." + kind
     image = kind == "image-insert"
     version = VERSION if image else EXPORT_VERSION
@@ -56,4 +62,5 @@ for kind, name in names.items():
     print(target.name, target.stat().st_size, digest)
 trust_path.write_text(json.dumps(trust, ensure_ascii=False, indent=2), encoding="utf-8")
 import runpy
-runpy.run_path(str(Path(__file__).with_name("build_conversion_plugin.py")), run_name="__main__")
+if not args.exports_only:
+    runpy.run_path(str(Path(__file__).with_name("build_conversion_plugin.py")), run_name="__main__")

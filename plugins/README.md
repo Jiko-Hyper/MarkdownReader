@@ -3,7 +3,9 @@
 MDReader 的核心功能（读写、撤销、表格、主题、公式阅读、HTML 导出）不依赖任何插件。
 **导出 Word/PDF**、**图片插入** 与 **文档格式转换** 由这里的四个官方插件提供，全部离线运行。
 
-新增 `mdreader.document-convert-1.0.0.zip`：PDF / Word DOCX 转 Markdown，Markdown 与 HTML 互转。
+Word/PDF 导出插件 1.0.5 新增「简洁报告」「技术文档」两套样式。更新宿主源码后，从工具栏「导出 Word/PDF」选择；旧插件可在提示中更新并启用。已有预检、取消和覆盖确认继续生效，样式不修改源 Markdown。
+
+`mdreader.document-convert-1.4.0.zip`：新增扫描 PDF 正文与 LaTeX 公式识别、页码选择和原页批注；需要宿主 0.4.11 及本地扫描运行环境。保留图片及纸质照片 OCR、普通 PDF / Word 转 Markdown 和 Markdown 与 HTML 互转。扫描识别不代表准确率已通过验收。
 更新宿主后，在桌面「更多 → 文档格式转换」使用，[安装与边界说明](official/document-convert/README.md)。
 
 | 目录 | 是什么 |

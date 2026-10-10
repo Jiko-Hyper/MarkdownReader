@@ -8,6 +8,9 @@ import uuid
 from . import plugins as P
 
 FORMATS = {
+    "scan-md": ((".pdf",), ".md"),
+    "photo-md": ((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"), ".md"),
+    "image-md": ((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"), ".md"),
     "pdf-md": ((".pdf",), ".md"),
     "docx-md": ((".docx",), ".md"),
     "md-html": ((".md", ".markdown"), ".html"),
@@ -16,7 +19,7 @@ FORMATS = {
 MAX_INPUT = 32 * 1024 * 1024
 
 
-def convert_file(store, command_name, source, destination):
+def convert_file(store, command_name, source, destination, *, pages="all", cancel=None, progress=None):
     command = store.find_command(command_name)
     if command["capability"] != P.CAP_CONVERT or command.get("format") not in FORMATS:
         raise P.TaskError("请选择文档格式转换命令")
@@ -25,8 +28,10 @@ def convert_file(store, command_name, source, destination):
     dest = Path(destination).absolute()
     if source.suffix.lower() not in extensions:
         raise P.TaskError("此命令只支持：" + "、".join(extensions))
-    if not source.is_file() or source.stat().st_size > MAX_INPUT:
-        raise P.TaskError("输入必须是 32 MB 以内的文件")
+    scan = command["format"] == "scan-md"
+    limit = 1024 * 1024 * 1024 if scan else MAX_INPUT
+    if not source.is_file() or source.stat().st_size > limit:
+        raise P.TaskError("输入必须是 %d MB 以内的文件" % (limit // (1024 * 1024)))
     if dest.suffix.lower() != output_ext:
         raise P.TaskError("输出文件扩展名应为 " + output_ext)
     if dest.exists() or dest.is_symlink():
@@ -34,21 +39,32 @@ def convert_file(store, command_name, source, destination):
     if not dest.parent.is_dir():
         raise P.TaskError("请先创建输出目录")
     asset_name = "conversion-assets-" + uuid.uuid4().hex[:12]
-    task = store.tasks.submit(command_name, input_files=[str(source)], timeout=120,
-                              options={"source_dir": str(source.parent), "assets_name": asset_name})
+    timeout = 14400 if scan else 120
+    task = store.tasks.submit(command_name, input_files=[str(source)], timeout=timeout,
+                              options={"source_dir": str(source.parent), "source_name": source.name,
+                                       "assets_name": asset_name, "pages": pages})
     temporary = None
     asset_dir = None
     try:
-        if not task.done.wait(125):
-            store.tasks.cancel(task.id, "转换超时")
-            task.done.wait(5)
-            raise P.TaskError("转换超时，请尝试较小的文档")
+        import time
+        deadline = time.monotonic() + timeout + 5
+        while not task.done.wait(.1):
+            if progress is not None:
+                progress(task.view().get('stage') or '正在准备扫描识别')
+            if cancel is not None and cancel.is_set():
+                store.tasks.cancel(task.id, "用户取消转换")
+                raise P.TaskError("已取消转换")
+            if time.monotonic() > deadline:
+                store.tasks.cancel(task.id, "转换超时")
+                raise P.TaskError("转换超时，请尝试较小的文档")
+        if cancel is not None and cancel.is_set():
+            raise P.TaskError("已取消转换")
         checked = store.tasks.result(task.id)
         if checked["extension"] != output_ext.lstrip("."):
             raise P.TaskError("转换产物扩展名不匹配")
         assets = checked.get("assets") or []
-        if sum(a["bytes"] for a in assets) + checked["bytes"] > P.MAX_ARTIFACT_BYTES:
-            raise P.TaskError("转换结果与图片合计超过 64 MB")
+        if sum(a["bytes"] for a in assets) + checked["bytes"] > (1024**3 if scan else P.MAX_ARTIFACT_BYTES):
+            raise P.TaskError("转换结果与图片合计超过上限，请缩小页码范围")
         if assets:
             folder = dest.parent / asset_name
             folder.mkdir()  # Never adopt an existing directory.
@@ -63,6 +79,8 @@ def convert_file(store, command_name, source, destination):
             out.flush()
             os.fsync(out.fileno())
         # Same-volume hard link publishes atomically and refuses a racing existing target.
+        if cancel is not None and cancel.is_set():
+            raise P.TaskError("已取消转换")
         os.link(temporary, dest)
         return {"path": str(dest), "warnings": checked.get("warnings", []),
                 "assets": str(asset_dir) if asset_dir else ""}
@@ -86,6 +104,12 @@ def show_conversion(owner, command):
         filetypes=[("源文档", " ".join("*" + ext for ext in extensions))])
     if not source:
         return
+    pages = "all"
+    if command["format"] == "scan-md":
+        from .scan_ui import choose_pages
+        pages = choose_pages(owner)
+        if pages is None:
+            return
     dest = filedialog.asksaveasfilename(parent=owner.root, title="保存转换结果（新文件）",
         initialdir=str(Path(source).parent), initialfile=Path(source).stem + suffix,
         defaultextension=suffix, filetypes=[("转换结果", "*" + suffix)])
@@ -93,7 +117,15 @@ def show_conversion(owner, command):
         return
     try:
         owner.notice("正在转换文件…")
-        result = run_job(owner, lambda: convert_file(owner.ws.plugins, command["command"], source, dest))
+        import threading
+        cancel = threading.Event()
+        if command["format"] == "scan-md":
+            status = {'text': '正在准备扫描识别，可取消本次操作'}
+            result = run_job(owner, lambda: convert_file(owner.ws.plugins, command["command"], source, dest,
+                             pages=pages, cancel=cancel, progress=lambda text: status.update(text=text)),
+                             cancel=cancel, status=lambda: status['text'])
+        else:
+            result = run_job(owner, lambda: convert_file(owner.ws.plugins, command["command"], source, dest))
         message = "已保存：" + result["path"]
         if result["assets"]:
             message += "\n图片目录：" + result["assets"]

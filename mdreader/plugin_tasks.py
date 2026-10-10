@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -245,9 +246,28 @@ class TaskManager:
 
     def _spawn(self, request: dict):
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        command = self._worker_command()
+        env = self._env()
+        if (request.get("format") or {}).get("format") == "scan-md":
+            from pathlib import Path
+            app = Path(self.worker_dir)
+            runtime = next((p for p in (app / "scan-runtime", app / "build/scan-runtime-portable")
+                            if (p / "python.exe").is_file()), app / "build/scan-runtime")
+            python = runtime / "python.exe"
+            if not python.is_file():
+                python = runtime / "Scripts/python.exe"
+            if not python.is_file():
+                raise P.TaskError("扫描识别组件未安装，请使用包含离线扫描组件的完整安装包")
+            command = [str(python), str(Path(self.worker_dir) / "mdreader/plugin_worker.py")]
+            env["MINERU_HOME"] = str(runtime / "models-home")
+            env["MINERU_MODEL_SOURCE"] = "local"
+            env["MINERU_CONFIG"] = str(runtime / "models-home/config.yaml")
+            env["HF_HUB_OFFLINE"] = "1"
+            env["MODELSCOPE_OFFLINE"] = "1"
+            env.pop("PYTHONPATH", None)
         proc = subprocess.Popen(
-            self._worker_command(),
-            cwd=self.worker_dir, env=self._env(), stdin=subprocess.PIPE,
+            command,
+            cwd=self.worker_dir, env=env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             encoding="utf-8", errors="replace", creationflags=flags,
         )
@@ -381,8 +401,8 @@ class TaskManager:
         if task.capability == P.CAP_CONVERT:
             checked = P.check_export_artifact(task.result, task.workdir, command)
             assets = task.result.get("assets") or []
-            if not isinstance(assets, list) or len(assets) > 500:
-                raise P.TaskError("转换附件数量无效或超过 500 张")
+            if not isinstance(assets, list) or len(assets) > (10000 if command.get("format") == "scan-md" else 500):
+                raise P.TaskError("转换附件数量无效或超过上限")
             checked["assets"] = [P.check_image_asset(path, task.workdir) for path in assets]
             return checked
         raise P.TaskError("不支持的能力：%s" % task.capability)
@@ -565,7 +585,7 @@ class TaskManager:
                 "note": checked.get("note", "")}
 
     def commit_export(self, task_id: str, dest: str, *, now_doc: "str | None" = None,
-                      now_revision: "str | None" = None) -> dict:
+                      now_revision: "str | None" = None, artifact_revision: "str | None" = None) -> dict:
         """把插件产物原子地放到用户选定的目标；失败保留原目标。"""
         checked = self.result(task_id, now_doc=now_doc, now_revision=now_revision)
         dest = os.path.abspath(str(dest or ""))
@@ -579,6 +599,8 @@ class TaskManager:
         try:
             with open(checked["path"], "rb") as stream:
                 raw = stream.read()
+            if artifact_revision is not None and hashlib.sha256(raw).hexdigest() != artifact_revision:
+                raise P.StaleResult('预览文件已变化，目标未改动，请重新生成')
             with open(temporary, "wb") as stream:
                 stream.write(raw)
                 stream.flush()

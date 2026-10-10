@@ -139,6 +139,15 @@ def main(argv=None) -> int:
         return 2
 
     folder = str((request.get("plugin") or {}).get("dir") or "")
+    if (request.get("format") or {}).get("format") == "photo-md":
+        # The large offline models live in the host runtime, not the 32 MB plugin ZIP.
+        from pathlib import Path
+        candidates = [Path(sys.executable).resolve().parent / "photo_ocr_runtime",
+                      Path(__file__).resolve().parents[1] / "plugins/photo-ocr-dependencies"]
+        for candidate in candidates:
+            if (candidate / "rapidocr/__init__.py").is_file():
+                sys.path.insert(0, str(candidate))
+                break
     entrypoint = str(request.get("entrypoint") or "")
     method = str(request.get("method") or "")
     try:

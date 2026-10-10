@@ -771,7 +771,7 @@ class ExportSourceDialog:
 class ExportReportDialog:
     """导出预检报告（F06）：错误必须返回修改，提示可以确认继续。"""
 
-    def __init__(self, parent, pal, scale=1, *, dest="", report=None, allow_confirm=True):
+    def __init__(self, parent, pal, scale=1, *, dest="", report=None, allow_confirm=True, on_locate=None):
         import tkinter as tk
         self.result = False
         report = report or {}
@@ -794,8 +794,12 @@ class ExportReportDialog:
         lines = []
         for item in errors:
             lines.append("✗ %s" % item["message"])
+            if item.get('advice'):
+                lines.append('建议：' + item['advice'])
         for item in warnings:
             lines.append("· %s" % item["message"])
+            if item.get('advice'):
+                lines.append('建议：' + item['advice'])
         stats = report.get("stats") or {}
         if stats:
             lines.append("")
@@ -810,6 +814,34 @@ class ExportReportDialog:
         box.pack(fill="both", expand=True, pady=round(10 * scale))
         box.insert("1.0", "\n".join(lines))
         box.configure(state="disabled")
+        self.report_box = box
+        self.locations = [dict(location, kind=item['kind']) for item in errors + warnings
+                          for location in item.get('locations', [])]
+        if on_locate and self.locations:
+            tk.Label(body, text='选择问题后可定位到源码（本次导出会停止）：',
+                     bg=pal['bg'], fg=pal['fg'], anchor='w').pack(fill='x')
+            frame = tk.Frame(body, bg=pal['bg'])
+            frame.pack(fill='x', pady=6)
+            self.issue_list = tk.Listbox(frame, height=min(5, len(self.locations)),
+                bg=pal['tree_bg'], fg=pal['fg'], selectbackground=pal['sel'],
+                selectforeground=pal['fg'], exportselection=False, font=(UI_FONT, UI_SIZE))
+            self.issue_list.pack(side='left', fill='both', expand=True)
+            scrollbar = tk.Scrollbar(frame, command=self.issue_list.yview)
+            scrollbar.pack(side='right', fill='y')
+            self.issue_list.configure(yscrollcommand=scrollbar.set)
+            for location in self.locations:
+                self.issue_list.insert('end', '第 %d 行：%s' % (location['line'], location['snippet']))
+            self.issue_list.selection_set(0)
+            def locate():
+                selected = self.issue_list.curselection()
+                if selected:
+                    issue = self.locations[selected[0]]
+                    self.finish(False)
+                    on_locate(issue)
+            self.issue_list.bind('<Double-Button-1>', lambda _e: locate())
+            tk.Button(body, text='定位所选问题', command=locate, relief='flat',
+                      bg=pal['button'], fg=pal['fg'], activebackground=pal['hover'],
+                      activeforeground=pal['fg'], padx=12, pady=7).pack(anchor='w', pady=(0, 8))
         actions = tk.Frame(body, bg=pal["bg"])
         actions.pack(fill="x")
         self.buttons = {}
@@ -948,6 +980,8 @@ class LinkReportDialog:
 SHORTCUTS = (
     ("Ctrl+N", "新建临时文档"),    ("Ctrl+O", "打开本地文件"),
     ("Ctrl+S", "保存（临时文档写回原文件）"),
+    ("Ctrl+Z", "源码编辑器：撤销（含 AI 采纳）"),
+    ("Ctrl+Y", "源码编辑器：重做；项目树：查看文件地址"),
     ("Ctrl+W", "关闭当前标签"),
     ("Ctrl+Tab", "切换标签"),
     ("Ctrl+E", "预览 / 源码"),
@@ -959,7 +993,6 @@ SHORTCUTS = (
     ("Delete", "项目树：删除选中的文件或文件夹（需确认）"),
     ("Ctrl+M", "项目树：更改选中目标的标题"),
     ("双击标题", "项目树：更改标题并同步本地名称"),
-    ("Ctrl+Y", "项目树：查看选中目标的文件地址"),
     ("Enter", "项目树：打开选中的文档"),
     ("F5", "刷新当前文档"),
     ("Ctrl+滚轮", "调整正文字号"),
@@ -2200,7 +2233,10 @@ class MarkdownWindow(DocumentActions):
         self.start_folder_watch()
         self.schedule_folder_watch()
         self.enable_file_drop()
-        self.root.after(500, self.offer_recovery)
+        # Only offer recovery when older snapshots exist at startup. A fast edit
+        # in this session must not trigger a delayed modal recovery prompt.
+        if self.ws.recovery.list():
+            self.root.after(500, self.offer_recovery)
         self.watch_shared_theme()
         if self.warning:
             self.notice(self.warning, error=True)
@@ -2946,17 +2982,13 @@ class MarkdownWindow(DocumentActions):
     # -- 表格与常用格式（F04）---------------------------------------------
     def _abs_index(self, editor, index) -> int:
         """控件里的 ``line.col`` → 整篇偏移量。"""
-        value = editor.count("1.0", index, "chars")
-        if isinstance(value, (tuple, list)):
-            value = value[0] if value else 0
-        return int(value or 0)
+        # Tk counts non-BMP characters as two units; Python slices count one.
+        return len(editor.get("1.0", index))
 
     def _offset_index(self, editor, offset: int) -> str:
         """整篇偏移量 → 控件里的 ``line.col``。"""
-        offset = max(0, int(offset))
-        prefix = editor.get("1.0", "end-1c")[:offset]
-        line = prefix.count("\n") + 1
-        return "%d.%d" % (line, offset - (prefix.rfind("\n") + 1))
+        from .navigation import widget_index
+        return widget_index(editor, editor.get("1.0", "end-1c"), max(0, int(offset)))
 
     def _caret_line(self, editor) -> int:
         return max(0, int(str(editor.index("insert")).split(".")[0]) - 1)
@@ -4522,6 +4554,10 @@ class MarkdownWindow(DocumentActions):
         """走核心的统一导出服务（F06）：先问来源、再预检，最后才真的转换。"""
         if not command:
             return
+        from .export_ui import export_options
+        options = export_options(self, command)
+        if options is None:
+            return
         context = self._plugin_document_context()
         if context is None:
             self.notice("请先保存当前文档，再用插件导出", error=True)
@@ -4534,9 +4570,11 @@ class MarkdownWindow(DocumentActions):
         if not dest:
             return
         self.stash_tab()
-        payload = {"command": command["command"], "dest": dest, "entry": "desktop", "wait": 180,
+        payload = {"command": command["command"], "dest": dest, "entry": "desktop", "wait": 180, "options": options,
                    "display_name": os.path.basename(name) or os.path.basename(context['doc'])}
         payload.update(context)
+        if command['extension'] == 'pdf' and getattr(self, '_pdf_preview', None) is not None and self._pdf_preview.get():
+            payload['defer_commit'] = True
         if self.dirty:
             payload["markdown"] = self.source      # 未保存时告诉宿主“缓冲区与磁盘不一致”
         # ① 有未保存修改时先问用哪一份内容（默认当前编辑内容）
@@ -4556,14 +4594,12 @@ class MarkdownWindow(DocumentActions):
         # ② 预检报告：错误只能返回修改，提示可以确认继续
         report = plan.get("preflight") or {}
         if (report.get("errors") or report.get("warnings")) and not plan.get("conflict"):
-            if not ExportReportDialog(self.root, self.pal, self.ui_scale, dest=plan.get("dest") or dest,
-                                      report=report).show():
+            if not self._show_export_report(plan.get("dest") or dest, report):
                 self.notice("已返回修改，导出没有开始")
                 return
             payload["confirm"] = True
         elif report.get("errors"):
-            ExportReportDialog(self.root, self.pal, self.ui_scale, dest=plan.get("dest") or dest,
-                               report=report, allow_confirm=False).show()
+            self._show_export_report(plan.get("dest") or dest, report, allow_confirm=False)
             return
         if not self._plugin_export_call(payload, dest):
             return
@@ -4577,6 +4613,29 @@ class MarkdownWindow(DocumentActions):
         except Exception as exc:
             self.notice("导出前检查失败：%s" % _s(exc), error=True)
             return None
+
+    def _show_export_report(self, dest, report, allow_confirm=True):
+        return ExportReportDialog(self.root, self.pal, self.ui_scale, dest=dest,
+            report=report, allow_confirm=allow_confirm,
+            on_locate=lambda issue: self.root.after_idle(lambda: self._locate_export_issue(issue, report))).show()
+
+    def _locate_export_issue(self, issue, report):
+        """Never use snapshot line numbers against a different document or changed buffer."""
+        import hashlib
+        self.stash_tab()
+        identity = (self.cur_loose or {}).get('path')
+        if not identity and self.cur_pid and self.cur_doc:
+            try:
+                identity = self.ws.doc_info(self.ws.require_project(self.cur_pid), self.cur_doc['id']).get('_abs')
+            except (OSError, ValueError):
+                self.notice('文档位置已变化，请重新打开文档并预检后再定位', error=True)
+                return
+        if (not identity or os.path.normcase(os.path.abspath(identity)) !=
+                os.path.normcase(os.path.abspath(report.get('document') or '')) or
+                hashlib.sha256(self.source.encode('utf-8')).hexdigest() != report.get('source_hash')):
+            self.notice('当前内容与导出预检的版本不同，请重新预检后再定位；未保存内容已保留', error=True)
+            return
+        self._locate_link_issue(issue)
 
     def _plugin_export_call(self, payload: dict, dest: str) -> bool:
         from tkinter import messagebox
@@ -4593,17 +4652,36 @@ class MarkdownWindow(DocumentActions):
         if result.get('cancelled'):
             self.notice('已取消导出，原目标未改动')
             return False
+        if result.get('preview_ready'):
+            task_id = result['task']['id']
+            try:
+                from .pdf_preview import preview_pdf
+                approved = preview_pdf(self, result['preview_path'], result.get('warnings') or [])
+            except Exception as exc:
+                bridge.post('/api/plugins/task/cancel', {'id': task_id})
+                self.notice('页面预览失败，目标未改动：%s' % _s(exc), error=True)
+                return False
+            if not approved:
+                bridge.post('/api/plugins/task/cancel', {'id': task_id})
+                self.notice('已返回修改，目标未改动')
+                return False
+            try:
+                result = run_job(self, lambda: bridge.post('/api/plugins/export', {'task': task_id, 'commit': True}))
+                if result.get('conflict'):
+                    bridge.post('/api/plugins/task/cancel', {'id': task_id})
+            except Exception as exc:
+                bridge.post('/api/plugins/task/cancel', {'id': task_id})
+                self.notice('保存失败，原目标未改动：%s' % _s(exc), error=True)
+                return False
         if result.get("blocked"):
-            ExportReportDialog(self.root, self.pal, self.ui_scale, dest=dest,
-                               report=result.get("preflight") or {}, allow_confirm=False).show()
+            self._show_export_report(dest, result.get("preflight") or {}, allow_confirm=False)
             return False
         if result.get("needs_source"):
             self.notice("这篇文档有未保存的修改，请重新导出并选择来源", error=True)
             return False
         if result.get("needs_confirm"):
             report = result.get("preflight") or {}
-            if not ExportReportDialog(self.root, self.pal, self.ui_scale, dest=dest,
-                                      report=report).show():
+            if not self._show_export_report(dest, report):
                 return False
             payload = dict(payload, confirm=True)
             return self._plugin_export_call(payload, dest)

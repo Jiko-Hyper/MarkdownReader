@@ -106,7 +106,7 @@ Write-Ok 'tkinter / Tcl-Tk 已补齐'
 
 # ------------------------------------------------------------ 插件依赖
 $packages = @('PIL', 'markdown_it', 'mdurl', 'docx', 'lxml', 'reportlab',
-              'charset_normalizer', 'typing_extensions.py')
+              'charset_normalizer', 'typing_extensions.py', 'pypdfium2', 'pypdfium2_raw', 'pypdfium2_cfg')
 $siteUser = & python -c "import site, os; print(os.path.dirname(site.getusersitepackages()))"
 $siteUser = if ($siteUser) { $siteUser.Trim() } else { '' }
 $searchRoots = @()
@@ -137,7 +137,7 @@ foreach ($package in $packages) {
 # dist-info：importlib.metadata 需要（Pillow / python-docx 会查自己的版本）
 foreach ($searchRoot in $searchRoots) {
     Get-ChildItem -LiteralPath $searchRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^(PIL|pillow|markdown_it|mdurl|docx|python_docx|lxml|reportlab|charset_normalizer|typing_extensions)-' } |
+        Where-Object { $_.Name -match '^(PIL|pillow|markdown_it|mdurl|docx|python_docx|lxml|reportlab|charset_normalizer|typing_extensions|pypdfium2)-' } |
         ForEach-Object {
             $destination = Join-Path $OutDir $_.Name
             if (-not (Test-Path -LiteralPath $destination)) {
@@ -146,6 +146,16 @@ foreach ($searchRoot in $searchRoots) {
         }
 }
 Write-Ok '插件依赖已复制'
+
+# Photo OCR is a separate, pinned host component; keep it out of plugin ZIPs.
+$photoDeps = Join-Path $root 'plugins\photo-ocr-dependencies'
+if (Test-Path -LiteralPath (Join-Path $photoDeps 'rapidocr\__init__.py')) {
+    & $pyExe (Join-Path $root 'tools\prepare_photo_ocr.py') --runtime $OutDir
+    if ($LASTEXITCODE -ne 0) { throw '照片识别组件校验或复制失败' }
+    Write-Ok '离线照片识别组件已复制'
+} else {
+    Write-Host '  [!] 未包含照片增强识别组件；可运行 tools/prepare_photo_ocr.py --install 补齐' -ForegroundColor Yellow
+}
 
 # ------------------------------------------------------------ 自检
 Write-Step '自检运行时 ...'
@@ -164,7 +174,7 @@ sys.path.insert(0, os.path.join(APP, "runtime"))
 from mdreader.appicon import ensure_tcl_environment
 ensure_tcl_environment()
 
-import tkinter, PIL, markdown_it, docx, typing_extensions
+import tkinter, PIL, markdown_it, docx, typing_extensions, pypdfium2
 import lxml.etree
 try:
     import reportlab
