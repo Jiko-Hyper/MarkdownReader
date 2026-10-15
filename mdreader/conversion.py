@@ -99,6 +99,9 @@ def show_conversion(owner, command):
     """Select disk input explicitly; never save or replace the current editor buffer."""
     from tkinter import filedialog, messagebox
     from .media_ui import run_job
+    from .component_ui import ensure_components
+    if not ensure_components(owner, command['format']):
+        return
     extensions, suffix = FORMATS[command["format"]]
     source = filedialog.askopenfilename(parent=owner.root, title=command["title"],
         filetypes=[("源文档", " ".join("*" + ext for ext in extensions))])

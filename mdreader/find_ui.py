@@ -53,7 +53,7 @@ class FindDialog:
         # Handle it on the entry as well and stop propagation after one toggle.
         for widget in (dialog, self.entry):
             for sequence in ('<Control-f>', '<Control-F>'):
-                widget.bind(sequence, owner._key(owner.toggle_find))
+                widget.bind(sequence, owner._unshifted_key(owner.toggle_find))
         self.entry.bind('<Return>', lambda _e: self.go('next'))
         self.entry.bind('<Shift-Return>', lambda _e: self.go('back'))
         dialog.bind('<Destroy>', self.on_destroy, add='+')

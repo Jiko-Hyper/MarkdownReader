@@ -2529,7 +2529,9 @@ function bind() {
 
   document.addEventListener('keydown', e => {
     const mod = e.ctrlKey || e.metaKey;
-    if (!mod) return;
+    if (!mod || e.altKey || e.isComposing || e.defaultPrevented || $('#overlay').classList.contains('on')) return;
+    // Keep unassigned shifted shortcuts and dialog input local to their owner.
+    if (e.shiftKey && !['m', 'M', 't', 'T'].includes(e.key)) return;
     if (e.key === 's' || e.key === 'S') { e.preventDefault(); saveDoc(); }
     else if (e.shiftKey && (e.key === 'm' || e.key === 'M')) {
       e.preventDefault(); applyFormat('formula_inline');

@@ -22,12 +22,23 @@ def main():
             "sys.exit(7 if '--fail' in sys.argv else 0)\n", encoding="utf-8")
         cases = [[], ["--version"], ["--open", str(package / "笔记 --console.md")],
                  ["--workspace", str(package / "数据 空间"), "--port", "0"], ["--fail"]]
-        for args in cases:
-            result = subprocess.run([str(package / "MDReader.exe"), "--console", *args], timeout=20)
-            actual = json.loads((package / "main.json").read_text(encoding="utf-8"))
-            assert actual == args, (actual, args)
-            assert result.returncode == (7 if args == ["--fail"] else 0), result.returncode
-    print("PASS: launcher arguments, Unicode/spaces, console substring, child exit status")
+        for clean in (False, True):
+            payload = package
+            if clean:
+                payload = package/'resources'
+                payload.mkdir()
+                for name in ('main.py', 'runtime'):
+                    (package/name).rename(payload/name)
+                (package/'main.json').unlink()
+                (package/'MDReader.log').unlink()
+            for args in cases:
+                result = subprocess.run([str(package / "MDReader.exe"), "--console", *args], timeout=20)
+                actual = json.loads((payload / "main.json").read_text(encoding="utf-8"))
+                assert actual == args, (actual, args)
+                assert result.returncode == (7 if args == ["--fail"] else 0), result.returncode
+            if clean:
+                assert {p.name for p in package.iterdir()} == {'MDReader.exe', 'resources'}
+    print("PASS: flat/clean launcher layouts, arguments, Unicode/spaces, console substring, child exit status")
 
 
 if __name__ == "__main__":

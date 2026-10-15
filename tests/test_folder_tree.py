@@ -68,6 +68,9 @@ class FolderTreeTests(unittest.TestCase):
         self.assertFalse(w.root_tree.item("r:子目录/深层", "open"))
         w.folder_arrows.toggle("r:子目录/深层")
         self.settle()
+        self.assertTrue(w.root_tree.item("r:子目录/深层", "open"))
+        w.root_tree.see("f:子目录/深层/图片.png")
+        w.root.update_idletasks()
         self.assertTrue(w.root_tree.bbox("f:子目录/深层/图片.png"))
         w.refresh_folder_tree(force=True)
         self.assertTrue(w.root_tree.item(row, "open"))
@@ -87,6 +90,42 @@ class FolderTreeTests(unittest.TestCase):
             with patch("tkinter.simpledialog.askstring", return_value=filename):
                 w.new_folder_doc()
             self.assertTrue(os.path.isfile(os.path.join(self.user, expected, filename + ".md")))
+
+    def test_folder_open_requests_file_contents_in_the_native_browser(self):
+        with patch("mdreader.core._dialog_folder", return_value=[self.user]) as picker:
+            self.win.open_user_folder()
+        self.assertTrue(picker.call_args.kwargs["browse_files"])
+
+    def test_clicking_a_directory_row_reveals_contents_and_keeps_creation_target(self):
+        w = self.open()
+        w.root.deiconify()
+        w.root.geometry("1200x1000")
+        w.root.update()
+        row = "r:子目录"
+        x, y, _, height = w.root_tree.bbox(row)
+        w.root_tree.event_generate("<ButtonPress-1>", x=x + 60, y=y + height // 2, time=1000)
+        w.root_tree.event_generate("<ButtonRelease-1>", x=x + 60, y=y + height // 2, time=1010)
+        w.root.update()
+        self.assertTrue(w.root_tree.item(row, "open"))
+        self.assertIn("f:子目录/深入.md", w.root_tree.get_children(row))
+        self.assertEqual(w._selected_root_dir(), "子目录")
+        self.settle()
+        # Tk delivers a Double-1 on the second press, even after the short arrow
+        # animation has completed. It must not close the directory again.
+        w.root_tree.event_generate("<ButtonPress-1>", x=x + 60, y=y + height // 2, time=1250)
+        w.root_tree.event_generate("<ButtonRelease-1>", x=x + 60, y=y + height // 2, time=1260)
+        w.root.update()
+        self.assertTrue(w.root_tree.item(row, "open"))
+        # The bundled Tk runtime and display scaling may leave fewer rows in
+        # view. Expansion must expose a scrollable child, not require it to fit.
+        w.root_tree.see("f:子目录/深入.md")
+        w.root.update_idletasks()
+        self.assertTrue(w.root_tree.bbox("f:子目录/深入.md"))
+        w.root_tree.focus_force()
+        w.root.update()
+        w.root_tree.event_generate("<KeyPress-Return>")
+        w.root.update()
+        self.assertFalse(w.root_tree.item(row, "open"))
 
     def test_watcher_notices_non_markdown_files_and_empty_directories(self):
         w = self.open()

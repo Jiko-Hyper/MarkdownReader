@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import unicodedata
+from collections import OrderedDict, deque
 
 from . import core
 from . import formatting as FM
@@ -104,12 +105,13 @@ def tab_title(tab):
 class SavePrompt:
     """Themed, centred save/discard/cancel prompt owned by the app window."""
 
-    def __init__(self, parent, title, pal, scale=1, *, deleting=False):
+    def __init__(self, parent, title, pal, scale=1, *, deleting=False, forgetting=False):
         import tkinter as tk
+        deleting = deleting or forgetting
         self.result = None
         self.window = tk.Toplevel(parent)
         self.window.withdraw()
-        self.window.title("确认删除" if deleting else "是否保存")
+        self.window.title("删除历史记录" if forgetting else "确认删除" if deleting else "是否保存")
         self.default_button = "取消" if deleting else "是"
         self.window.transient(parent)
         self.window.resizable(False, False)
@@ -118,7 +120,7 @@ class SavePrompt:
         self.window.bind("<Escape>", lambda _e: self.finish(None))
         body = tk.Frame(self.window, bg=pal["bg"], padx=round(26 * scale), pady=round(22 * scale))
         body.pack(fill="both", expand=True)
-        tk.Label(body, text="确认删除本地内容？" if deleting else "是否保存文档？", bg=pal["bg"], fg=pal["fg"],
+        tk.Label(body, text="删除历史打开记录？" if forgetting else "确认删除本地内容？" if deleting else "是否保存文档？", bg=pal["bg"], fg=pal["fg"],
                  font=(UI_FONT, 14, "bold"), anchor="w").pack(fill="x")
         tk.Label(body, text=title if deleting else "「%s」尚未保存。\n选择“否”将放弃未保存的内容。" % title,
                  bg=pal["bg"], fg=pal["muted"], justify="left", anchor="w",
@@ -126,7 +128,7 @@ class SavePrompt:
         actions = tk.Frame(body, bg=pal["bg"])
         actions.pack(fill="x")
         self.buttons = {}
-        choices = (("取消", None), ("删除并移入回收站", True)) if deleting else (("取消", None), ("否", False), ("是", True))
+        choices = (("取消", None), ("删除记录", True)) if forgetting else (("取消", None), ("删除并移入回收站", True)) if deleting else (("取消", None), ("否", False), ("是", True))
         for label, answer in choices:
             primary = answer is True
             button = tk.Button(actions, text=label, width=16 if deleting and primary else 7, relief="flat", bd=0, pady=7,
@@ -273,7 +275,6 @@ class RenamePrompt:
         self.entry.selection_range(0, "end")
         self.entry.bind("<Return>", lambda _e: self.finish(self.entry.get()))
         if project_parent is not None:
-            from tkinter import filedialog
             self.location = tk.StringVar(self.window, value=project_parent)
             tk.Label(body, text="保存位置（将在此处新建项目文件夹）：", bg=pal["bg"],
                      fg=pal["muted"], anchor="w", pady=round(12 * scale)).pack(fill="x")
@@ -286,10 +287,15 @@ class RenamePrompt:
                 highlightcolor=pal["accent"], font=(UI_FONT, UI_SIZE))
             self.location_entry.pack(side="left", fill="x", expand=True, ipady=round(8 * scale))
             def browse():
-                folder = filedialog.askdirectory(title="选择项目保存位置", parent=self.window,
-                                                 initialdir=self.location.get(), mustexist=True)
-                if folder:
-                    self.location.set(folder)
+                try:
+                    paths = core._dialog_folder(title="选择项目保存位置", parent=self.window,
+                                                initialdir=self.location.get())
+                except Exception as exc:
+                    from tkinter import messagebox
+                    messagebox.showerror("无法选择文件夹", str(exc), parent=self.window)
+                    return
+                if paths:
+                    self.location.set(paths[0])
             tk.Button(location_row, text="浏览…", command=browse, relief="flat", bd=0,
                       bg=pal["button"], fg=pal["fg"], activebackground=pal["hover"],
                       activeforeground=pal["fg"], padx=10, pady=7).pack(side="right", padx=(8, 0))
@@ -980,17 +986,24 @@ class LinkReportDialog:
 SHORTCUTS = (
     ("Ctrl+N", "新建临时文档"),    ("Ctrl+O", "打开本地文件"),
     ("Ctrl+S", "保存（临时文档写回原文件）"),
+    ("Ctrl+Shift+S", "另存为（选择新的保存位置）"),
     ("Ctrl+Z", "源码编辑器：撤销（含 AI 采纳）"),
     ("Ctrl+Y", "源码编辑器：重做；项目树：查看文件地址"),
     ("Ctrl+W", "关闭当前标签"),
     ("Ctrl+Tab", "切换标签"),
     ("Ctrl+E", "预览 / 源码"),
     ("Ctrl+F", "搜索文章：高亮全部匹配，循环前后查找与首尾直达"),
-    ("Shift+M", "正文：切换预览 / 源码并定位选中文字"),
+    ("Ctrl+L", "打开当前文章的标题导航"),
+    ("Enter / Shift+Enter", "查找框：下一个 / 上一个匹配"),
+    ("Esc", "关闭当前弹窗；最近打开搜索框：清空搜索"),
+    ("Ctrl+Shift+E", "正文：切换预览 / 源码并定位选区或当前位置"),
     ("Ctrl+Home", "正文：光标移到文章第一行"),
     ("Ctrl+End", "正文：光标移到文章最后一行"),
     ("Ctrl+B", "显示 / 隐藏侧栏"),
     ("Delete", "项目树：删除选中的文件或文件夹（需确认）"),
+    ("Ctrl+Delete", "文件夹 / 项目选择框：删除当前历史记录（保留本地内容）"),
+    ("Enter / Esc", "文件夹 / 项目搜索：选择匹配项 / 恢复当前选择"),
+    ("Delete / Enter", "最近打开列表：移除记录（保留文件）/ 打开文件"),
     ("Ctrl+M", "项目树：更改选中目标的标题"),
     ("双击标题", "项目树：更改标题并同步本地名称"),
     ("Enter", "项目树：打开选中的文档"),
@@ -999,6 +1012,9 @@ SHORTCUTS = (
     ("Ctrl+Shift+T", "在光标处插入一张表格"),
     ("Ctrl+Shift+M", "插入行内数学公式"),
     ("Ctrl+Shift+V", "把剪贴板里的截图插到光标处（需图片插入插件）"),
+    ("Ctrl+Enter", "AI 对话输入框：发送请求"),
+    ("← / →", "PDF 页面预览：上一页 / 下一页；Esc 返回修改"),
+    ("Enter / Esc", "扫描 PDF 页码框：开始识别 / 取消"),
     ("拖入窗口", "直接阅读并修改 .md 原文件；拖入图片则插到光标处"),
 )
 
@@ -1879,6 +1895,160 @@ def formula_pixel_size(widget, point_size) -> int:
     return max(8, int(round(float(point_size) * per_point * 0.95)))
 
 
+def _formula_photo(widget, tex, display, pixels, theme, prepared=None):
+    """Reuse decoded Tk images; disk cache alone still decodes on every zoom."""
+    import base64
+    import tkinter as tk
+    from . import formula as FX
+    scale = getattr(widget, '_formula_scale', 1.0)
+    key = FX.cache_key(tex, size=pixels, display=display, theme=theme, scale=scale)
+    images = getattr(widget, '_formula_photos', None)
+    if images is None:
+        images = widget._formula_photos = OrderedDict()
+    if key in images:
+        images.move_to_end(key)
+        return images[key]
+    color, background = FX.colors_for(theme)
+    result = prepared if prepared is not None else FX.cached(
+        getattr(widget, '_formula_cache', ''), tex, size=pixels,
+        display=display, theme=theme, color=color, background=background, scale=scale)
+    if not result.get('ok'):
+        return None
+    try:
+        photo = tk.PhotoImage(data=base64.b64encode(result['png']).decode('ascii'), master=widget)
+    except Exception:
+        return None
+    images[key] = photo
+    while len(images) > 64:
+        images.popitem(last=False)
+    return photo
+
+
+_formula_worker = None
+
+
+def _prepare_formula(directory, tex, display, pixels, theme, scale):
+    """Worker entry: no widgets or Tk calls may cross this boundary."""
+    from . import formula as FX
+    color, background = FX.colors_for(theme)
+    return FX.cached(directory, tex, size=pixels, display=display,
+                     theme=theme, color=color, background=background, scale=scale)
+
+
+class FormulaRefreshQueue:
+    """Keep formula-heavy zooms out of a single, blocking UI callback."""
+    BUDGET = .004
+    INTERVAL = 8
+
+    def __init__(self, widget):
+        self.widget = widget
+        self.labels = []
+        self.pending = deque()
+        self.priority = deque()
+        self.promoted = set()
+        self.remaining = set()
+        self.job = None
+        self.style = None
+        self.future = None
+        self.inflight = None
+        self.generation = 0
+
+    def cancel(self):
+        if self.job is not None:
+            try:
+                self.widget.after_cancel(self.job)
+            except Exception:
+                pass
+        self.job = None
+        self.pending.clear()
+        self.priority.clear()
+        self.promoted.clear()
+        self.remaining.clear()
+        self.generation += 1
+        if self.future is not None and self.future.cancel():
+            self.future = self.inflight = None
+
+    def request(self, palette, size):
+        if self.style is not None and self.style[0] is palette and self.style[1] == size:
+            return
+        self.cancel()
+        self.style = (palette, size)
+        # Small documents keep their existing immediate behaviour.
+        if len(self.labels) <= 4:
+            for label in self.labels:
+                if label.winfo_exists():
+                    label._restyle_formula(palette, size)
+            return
+        self.pending.extend(self.labels)
+        self.remaining.update(self.labels)
+        for label in self.labels:
+            if label.winfo_exists() and label.winfo_ismapped():
+                self.promote(label)
+        if self.job is None:
+            self.job = self.widget.after(self.INTERVAL, self.apply)
+
+    def promote(self, label):
+        if label in self.remaining and label not in self.promoted:
+            self.priority.append(label)
+            self.promoted.add(label)
+
+    def apply(self):
+        import time
+        global _formula_worker
+        self.job = None
+        if not self.widget.winfo_exists():
+            self.cancel()
+            return
+        if self.future is not None:
+            if not self.future.done():
+                self.job = self.widget.after(self.INTERVAL, self.apply)
+                return
+            label, generation = self.inflight
+            future = self.future
+            self.future = self.inflight = None
+            if generation == self.generation and label in self.remaining:
+                self.remaining.discard(label)
+                if label.winfo_exists():
+                    try:
+                        prepared = future.result()
+                    except Exception:
+                        prepared = {'ok': False}
+                    label._restyle_formula(*self.style, prepared=prepared)
+        deadline = time.perf_counter() + self.BUDGET
+        while self.priority or self.pending:
+            label = self.priority.popleft() if self.priority else self.pending.popleft()
+            if label not in self.remaining:
+                continue
+            self.promoted.discard(label)
+            if label.winfo_exists():
+                from . import formula as FX
+                pixels = formula_pixel_size(self.widget, self.style[1])
+                theme = getattr(self.widget, '_formula_theme', 'light')
+                scale = getattr(self.widget, '_formula_scale', 1.0)
+                key = FX.cache_key(label._formula_tex, size=pixels,
+                                   display=label._formula_display, theme=theme, scale=scale)
+                if label._formula_applied == [pixels, theme] or key in self.widget._formula_photos:
+                    label._restyle_formula(*self.style)
+                else:
+                    if _formula_worker is None:
+                        from concurrent.futures import ThreadPoolExecutor
+                        _formula_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='mdreader-formula')
+                    self.inflight = (label, self.generation)
+                    self.future = _formula_worker.submit(
+                        _prepare_formula, getattr(self.widget, '_formula_cache', ''),
+                        label._formula_tex, label._formula_display, pixels, theme, scale)
+                    self.job = self.widget.after(self.INTERVAL, self.apply)
+                    return
+            self.remaining.discard(label)
+            if time.perf_counter() >= deadline:
+                break
+        if self.remaining:
+            self.job = self.widget.after(self.INTERVAL, self.apply)
+        else:
+            self.pending.clear()
+            self.priority.clear()
+
+
 def insert_preview_formula(widget, tex: str, display: bool = False) -> bool:
     """把公式画成图片嵌进预览。
 
@@ -1886,27 +2056,12 @@ def insert_preview_formula(widget, tex: str, display: bool = False) -> bool:
     交给 Tk）。画不出来（不支持的命令、字号超限）时返回 False，由调用方把**原始
     表达式**留在正文里——渲染失败不该让公式消失。
     """
-    import base64
     import tkinter as tk
-
-    from . import formula as FX
-    cache = getattr(widget, "_formula_cache", "")
     theme = getattr(widget, "_formula_theme", "light")
     base = getattr(widget, "_preview_size", PREVIEW_SIZE)
-    color, background = FX.colors_for(theme)
     pixels = formula_pixel_size(widget, base)
-    result = FX.cached(cache, tex, size=pixels, display=display, theme=theme,
-                       color=color, background=background,
-                       scale=getattr(widget, "_formula_scale", 1.0))
-    if not result.get("ok"):
-        return False
-    try:
-        if result.get("path"):
-            photo = tk.PhotoImage(file=result["path"], master=widget)
-        else:
-            photo = tk.PhotoImage(
-                data=base64.b64encode(result["png"]).decode("ascii"), master=widget)
-    except Exception:
+    photo = _formula_photo(widget, tex, display, pixels, theme)
+    if photo is None:
         return False
     label = tk.Label(widget, image=photo, bg=widget.cget("bg"), bd=0)
     label.image = photo
@@ -1918,30 +2073,29 @@ def insert_preview_formula(widget, tex: str, display: bool = False) -> bool:
         "<Control-MouseWheel>", delta=event.delta) or "break")
 
     applied = [pixels, theme]
+    label._formula_applied = applied
 
-    def restyle(palette, size):
+    def restyle(palette, size, prepared=None):
         """缩放或换主题时按新的字号/配色重画这一张图（缓存命中，代价很低）。"""
         wanted = formula_pixel_size(widget, size)
         theme_now = getattr(widget, "_formula_theme", theme)
-        if not _s(getattr(widget, "_formula_cache", "")):
-            return
         if [wanted, theme_now] == applied:
             return
-        colors = FX.colors_for(theme_now)
-        again = FX.cached(getattr(widget, "_formula_cache", ""), tex, size=wanted,
-                          display=display, theme=theme_now, color=colors[0],
-                          background=colors[1], scale=getattr(widget, "_formula_scale", 1.0))
-        if not again.get("ok") or not label.winfo_exists():
+        if not label.winfo_exists():
             return
-        try:
-            image = tk.PhotoImage(file=again["path"], master=widget)
-        except Exception:
+        image = _formula_photo(widget, tex, display, wanted, theme_now, prepared=prepared)
+        if image is None:
             return
         label.configure(image=image, bg=palette.get("bg", widget.cget("bg")))
         label.image = image
         applied[0], applied[1] = wanted, theme_now
 
     label._restyle_formula = restyle
+    refresh = getattr(widget, '_formula_refresh', None)
+    if refresh is None:
+        refresh = widget._formula_refresh = FormulaRefreshQueue(widget)
+    refresh.labels.append(label)
+    label.bind('<Map>', lambda _event: refresh.promote(label))
     widget.insert("end", "\n", ())
     widget.window_create("end", window=label, padx=4, pady=6)
     widget.insert("end", "\n", ())
@@ -1951,6 +2105,10 @@ def insert_preview_formula(widget, tex: str, display: bool = False) -> bool:
 def render_to_text(widget, markdown_text: str, palette: dict | None = None, links: dict | None = None) -> None:
     """Render Markdown into a Text widget using the configured tag styles."""
     pal = palette or LIGHT
+    refresh = getattr(widget, '_formula_refresh', None)
+    if refresh is not None:
+        refresh.cancel()
+    widget._formula_refresh = FormulaRefreshQueue(widget)
     widget.configure(state="normal")
     for child in widget.winfo_children():
         child.destroy()
@@ -2224,6 +2382,11 @@ class MarkdownWindow(DocumentActions):
         self.ime_search = InlineIME(self.recent_search, palette=lambda: self.pal)
         self._imes.append(self.ime_search)
         self.ime_search.set_editable(True)
+        self.ime_folder_search = InlineIME(self.cmb_root, palette=lambda: self.pal)
+        self.ime_project_search = InlineIME(self.cmb, palette=lambda: self.pal)
+        for adapter in (self.ime_folder_search, self.ime_project_search):
+            self._imes.append(adapter)
+            adapter.set_editable(True)
         self.apply_theme()
         self._bind_keys()
         self.refresh_roots()
@@ -2331,12 +2494,17 @@ class MarkdownWindow(DocumentActions):
         rowf = tk.Frame(folder_box, bd=0, highlightthickness=0)
         rowf.grid(row=1, column=0, sticky="ew", padx=10)
         rowf.columnconfigure(0, weight=1)
-        self.cmb_root = ttk.Combobox(rowf, state="readonly", values=[])
+        from .search_combo import SearchableCombobox
+        self.cmb_root = SearchableCombobox(rowf, palette=lambda: self.pal, values=[])
         self.cmb_root.grid(row=0, column=0, sticky="ew")
         self.cmb_root.bind("<<ComboboxSelected>>", lambda _e: self.on_root_change())
+        self.cmb_root.bind("<Button-3>", lambda e: self.show_history_menu("folder", e))
+        self.cmb_root.bind("<Control-Delete>", lambda e: self.remove_history("folder"))
+        tk.Button(rowf, text="×", command=lambda: self.show_history_menu("folder"),
+                  relief="flat", bd=0, cursor="hand2", padx=6).grid(row=0, column=1, padx=(4, 0))
         self.btn_open_folder = tk.Button(rowf, text="\U0001f4c2 打开文件夹", command=self.open_user_folder,
                                          relief="flat", bd=0, cursor="hand2", padx=8, pady=3)
-        self.btn_open_folder.grid(row=0, column=1, padx=(6, 0))
+        self.btn_open_folder.grid(row=0, column=2, padx=(6, 0))
         rowf2 = tk.Frame(folder_box, bd=0, highlightthickness=0)
         rowf2.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(4, 0))
         self.btn_new_md = tk.Button(rowf2, text="\uff0b 新建 Markdown", command=self.new_folder_doc,
@@ -2377,12 +2545,16 @@ class MarkdownWindow(DocumentActions):
         rowp = tk.Frame(self.project_box, bd=0, highlightthickness=0)
         rowp.grid(row=1, column=0, sticky="ew", padx=10)
         rowp.columnconfigure(0, weight=1)
-        self.cmb = ttk.Combobox(rowp, state="readonly", values=[])
+        self.cmb = SearchableCombobox(rowp, palette=lambda: self.pal, values=[])
         self.cmb.grid(row=0, column=0, sticky="ew")
         self.cmb.bind("<<ComboboxSelected>>", lambda _e: self.on_project_change())
+        self.cmb.bind("<Button-3>", lambda e: self.show_history_menu("project", e))
+        self.cmb.bind("<Control-Delete>", lambda e: self.remove_history("project"))
+        tk.Button(rowp, text="×", command=lambda: self.show_history_menu("project"),
+                  relief="flat", bd=0, cursor="hand2", padx=6).grid(row=0, column=1, padx=(4, 0))
         self.btn_new = tk.Button(rowp, text="\uff0b 新建项目", command=self.new_project,
                                  relief="flat", bd=0, cursor="hand2", padx=8, pady=3)
-        self.btn_new.grid(row=0, column=1, padx=(6, 0))
+        self.btn_new.grid(row=0, column=2, padx=(6, 0))
         self.tree = ttk.Treeview(self.project_box, show="tree", selectmode="browse")
         self.tree.grid(row=3, column=0, sticky="nsew", padx=(10, 4), pady=(10, 4))
         vsb = ttk.Scrollbar(self.project_box, orient="vertical", command=self.tree.yview)
@@ -2561,16 +2733,21 @@ class MarkdownWindow(DocumentActions):
         return btn
 
     def _bind_keys(self) -> None:
-        self.root.bind('<Control-Shift-S>', self._key(self.save_as))
+        if not hasattr(self, '_shortcut_tag'):
+            self._shortcut_tag = 'MDReaderShortcuts' + str(id(self))
+            self.root.bind('<Map>', lambda event: self._install_shortcuts(event.widget), add='+')
+        for seq in ('<Control-Shift-S>', '<Control-Shift-s>'):
+            self._bind_shortcut(seq, self.save_as)
         for widget in (self.root, self.recent_search):
             for sequence in ('<Control-f>', '<Control-F>'):
-                widget.bind(sequence, self._key(self.toggle_find))
-        self.root.bind('<Control-l>', self._key(self.show_outline))
+                widget.bind(sequence, self._unshifted_key(self.toggle_find))
+        self._bind_shortcut('<Control-l>', self.show_outline)
         for seq, fn in (("<Control-s>", self.save_doc), ("<F5>", self.reload_doc),
                         ("<Control-e>", self.toggle_mode), ("<Control-b>", self.toggle_sidebar),
                         ("<Control-o>", self.open_local_files), ("<Control-w>", self.close_active_tab),
                         ("<Control-n>", self.new_loose_draft),
                         ("<Control-Shift-T>", self.insert_table_dialog),
+                        ("<Control-Shift-t>", self.insert_table_dialog),
                         ("<Control-Shift-M>", lambda: self.format_selection("formula_inline")),
                         ("<Control-Shift-m>", lambda: self.format_selection("formula_inline")),
                         # Ctrl+Shift+V：Tk 里大写 V 与小写 v 是两个不同的 keysym，
@@ -2578,9 +2755,42 @@ class MarkdownWindow(DocumentActions):
                         ("<Control-Shift-V>", self.insert_clipboard_image),
                         ("<Control-Shift-v>", self.insert_clipboard_image),
                         ("<Control-Tab>", self.next_tab)):
-            self.root.bind(seq, self._key(fn))
+            self._bind_shortcut(seq, fn)
+        self._install_shortcuts(self.root)
         self.root.bind("<Control-MouseWheel>", self.on_zoom)
+        self.root.bind_class(self._shortcut_tag, "<Control-MouseWheel>", self.on_zoom)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _bind_shortcut(self, sequence, action):
+        run = self._key(action)
+        shifted = 'Shift-' in sequence
+        def handler(event):
+            if event.state & 0x20008 or bool(event.state & 1) != shifted:
+                return None
+            return run(event)
+        sequences = [sequence]
+        key = sequence.rsplit('-', 1)[-1][:-1]
+        if len(key) == 1 and key.isalpha():
+            sequences.append(sequence[:-2] + key.swapcase() + '>')
+        for variant in sequences:
+            self.root.bind(variant, handler)
+            self.root.bind_class(self._shortcut_tag, variant, handler)
+
+    def _install_shortcuts(self, widget):
+        """Run app accelerators before Tk's Text/Entry editing defaults.
+
+        Ctrl+O inserts a newline in Tk Text; Ctrl+Shift+T can transpose text.
+        Widget-local commands keep priority, and separate dialogs keep their
+        own bindings instead of operating on the document behind them.
+        """
+        if not hasattr(self, '_shortcut_tag') or widget.winfo_toplevel() is not self.root:
+            return
+        if widget is not self.root:
+            tags = widget.bindtags()
+            if self._shortcut_tag not in tags:
+                widget.bindtags((tags[0], self._shortcut_tag) + tags[1:])
+        for child in widget.winfo_children():
+            self._install_shortcuts(child)
 
     def _key(self, fn):
         def handler(_event):
@@ -2589,6 +2799,14 @@ class MarkdownWindow(DocumentActions):
             except Exception as exc:
                 self.notice("操作失败：%s" % _s(exc), error=True)
             return "break"
+        return handler
+
+    def _unshifted_key(self, fn):
+        run = self._key(fn)
+        def handler(event):
+            if event.state & 0x20009:
+                return None
+            return run(event)
         return handler
 
     # -- open documents (separate from recent-file history) ---------------
@@ -2955,6 +3173,8 @@ class MarkdownWindow(DocumentActions):
         label, action = entries["manage"]
         popup.add_command(label=label, command=action)
         popup.add_separator()
+        from .component_ui import show_components
+        popup.add_command(label="识别组件管理…", command=lambda: show_components(self))
         popup.add_command(label="检查当前文档链接…", command=self.check_document_links)
         popup.add_command(label="插入表格…  Ctrl+Shift+T", command=self.insert_table_dialog)
         popup.add_command(label="插入行内公式…  Ctrl+Shift+M",
@@ -2967,17 +3187,27 @@ class MarkdownWindow(DocumentActions):
         popup.add_command(label="AI 接入…", command=self.show_ai_connection)
         popup.add_command(label="外部 AI 控制接口（高级）…", command=self.show_external_ai_connection)
         popup.add_command(label="关于 %s" % core.APP_NAME, command=self.show_about)
+        if os.name == 'nt':
+            popup.add_command(label="设置默认 Markdown 打开器…", command=self.set_default_markdown_app)
         popup.add_command(label="打开工作区文件夹", command=self.open_workspace_folder)
         popup.add_command(label="快捷键说明", command=self.show_shortcuts)
         popup.add_command(label="另存为…  Ctrl+Shift+S", command=self.save_as)
         popup.add_command(label="文档内查找  Ctrl+F", command=self.find_in_document)
         popup.add_command(label="标题导航  Ctrl+L", command=self.show_outline)
+        popup.add_command(label="切换视图并定位  Ctrl+Shift+E", command=self.switch_at_selection)
         popup.add_command(label="恢复未保存文档", command=self.show_recovery)
         try:
             popup.tk_popup(self.btn_more.winfo_rootx(),
                            self.btn_more.winfo_rooty() + self.btn_more.winfo_height())
         finally:
             popup.grab_release()
+
+    def set_default_markdown_app(self):
+        try:
+            core.open_default_app_settings()
+            self.notice("已打开 Windows 默认应用设置，请将 .md 选择为 MDReader")
+        except Exception as exc:
+            self.notice(str(exc), error=True)
 
     # -- 表格与常用格式（F04）---------------------------------------------
     def _abs_index(self, editor, index) -> int:
@@ -3063,10 +3293,10 @@ class MarkdownWindow(DocumentActions):
     def _preview_selection_offsets(self):
         """预览里选中的文字映射回源码偏移；没有预览选区时返回 None。
 
-        阅读位置在预览里更自然，映射用的是 Shift+M 定位的同一套算法；映射结果会
+        阅读位置在预览里更自然，映射用的是切换视图定位的同一套算法；映射结果会
         在发送前显示给用户核对，映射不准时用户能立刻看出来。
         """
-        from .navigation import map_selection, widget_text
+        from .navigation import map_markdown_selection, widget_text
         try:
             ranges = self.preview.tag_ranges("sel")
         except Exception:
@@ -3076,7 +3306,7 @@ class MarkdownWindow(DocumentActions):
         rendered = widget_text(self.preview)
         start = len(widget_text(self.preview, ranges[0]))
         end = len(widget_text(self.preview, ranges[1]))
-        first, last = map_selection(rendered, self.get_text(), start, end)
+        first, last = map_markdown_selection(self.get_text(), rendered, start, end)
         return (first, last) if first != last else None
 
     def format_selection(self, action: str, **options) -> bool:
@@ -3287,7 +3517,7 @@ class MarkdownWindow(DocumentActions):
                                  arrowcolor=pal["muted"], bordercolor=pal["rule"],
                                  lightcolor=pal["rule"], darkcolor=pal["rule"],
                                  selectbackground=pal["sel"], selectforeground=pal["fg"])
-            self.style.map(name, fieldbackground=[("disabled", pal["side"]), ("readonly", pal["bg"])],
+            self.style.map(name, fieldbackground=[("disabled", pal["side"]), ("!disabled", pal["bg"])],
                            foreground=[("disabled", pal["faint"]), ("readonly", pal["fg"])],
                            bordercolor=[("focus", pal["accent"])],
                            background=[("active", pal["hover"])])
@@ -3313,6 +3543,8 @@ class MarkdownWindow(DocumentActions):
         self.root.tk.call(str(popup) + ".f.l", "configure", "-background", pal["bg"],
                           "-foreground", pal["fg"], "-selectbackground", pal["sel"],
                           "-selectforeground", pal["fg"])
+        self.cmb.apply_theme()
+        self.cmb_root.apply_theme()
         self._invalidate_styles()
         self._style_widget(self.text)            # 只重排屏幕上的控件
         self._style_widget(self.preview)
@@ -3406,6 +3638,9 @@ class MarkdownWindow(DocumentActions):
 
     def _apply_zoom(self):
         import time
+        pending = getattr(self, '_zoom_job', None)
+        if pending is not None:
+            self.root.after_cancel(pending)
         self._zoom_job = None
         widget = self.text
         # Read the anchor *before* restyling and only restore it when the text
@@ -3424,7 +3659,7 @@ class MarkdownWindow(DocumentActions):
             (self.doc_hscroll if horizontal else self.doc_vscroll).set(first, last)
 
     # -- projects --------------------------------------------------------
-    def refresh_projects(self, keep: bool = True) -> None:
+    def refresh_projects(self, keep: bool = True, *, history_only: bool = False) -> None:
         """Re-read the workspace, keeping the selection when asked to."""
         try:
             self.projects = list(self.ws.list_projects())
@@ -3433,6 +3668,20 @@ class MarkdownWindow(DocumentActions):
             self.notice("读取项目失败：%s" % _s(exc), error=True)
         self.cmb.configure(values=["%s (%d)" % (p.get("name") or p.get("id"), p.get("doc_count") or 0)
                                    for p in self.projects])
+        self.cmb.set_search_fields([p.get("path") or p.get("id") for p in self.projects])
+        if history_only:
+            # Removing a sidebar record must never switch or rewrite an open buffer.
+            self.cmb.configure(state="readonly" if self.projects else "disabled")
+            index = next((i for i, p in enumerate(self.projects) if p["id"] == self.cur_pid), -1)
+            if index >= 0:
+                self.cmb.current(index)
+            else:
+                self.cmb.set("")
+                self.tree.delete(*self.tree.get_children())
+                self._project_nodes = {}
+                self.docs, self.dirs = [], []
+                self.lbl_path.configure(text="请选择项目，或新建项目")
+            return
         if not self.projects:
             self.cur_pid = None
             try:
@@ -3571,6 +3820,8 @@ class MarkdownWindow(DocumentActions):
         return "break"
 
     def on_project_tree_path(self, event=None) -> str:
+        if event is not None and getattr(event, 'keysym', '').lower() == 'y' and event.state & 0x20009:
+            return None
         selected = self.tree.selection()
         if not self.cur_pid or not selected:
             return "break"
@@ -3585,6 +3836,8 @@ class MarkdownWindow(DocumentActions):
         return "break"
 
     def on_project_tree_rename(self, event=None) -> str:
+        if event is not None and getattr(event, 'keysym', '').lower() == 'm' and event.state & 0x20009:
+            return None
         if event is not None and getattr(event, "num", None) == 1:
             row = self.tree.identify_row(event.y)
             if not row or "indicator" in self.tree.identify_element(event.x, event.y):
@@ -3722,6 +3975,7 @@ class MarkdownWindow(DocumentActions):
         self.projects = list(self.ws.list_projects())
         self.cmb.configure(values=["%s (%d)" % (p.get("name") or p["id"], p.get("doc_count") or 0)
                                    for p in self.projects])
+        self.cmb.set_search_fields([p.get("path") or p.get("id") for p in self.projects])
         self.select_current_project()
         if self.cur_pid:
             current_dir = self.ws.require_project(self.cur_pid)
@@ -3799,6 +4053,7 @@ class MarkdownWindow(DocumentActions):
             self.roots = []
             self.notice("读取文件夹失败：%s" % _s(exc), error=True)
         self.cmb_root.configure(values=[_s(r.get("name") or r.get("path")) for r in self.roots])
+        self.cmb_root.set_search_fields([r.get("path") for r in self.roots])
         if not self.roots:
             self.cur_root = None
             try:
@@ -3840,7 +4095,9 @@ class MarkdownWindow(DocumentActions):
     def open_user_folder(self) -> None:
         """选择一个用户自己的文件夹，登记后直接读写原件。"""
         try:
-            paths = core._dialog_folder()
+            initial = next((r.get("path", "") for r in self.roots
+                            if r.get("id") == self.cur_root), "")
+            paths = core._dialog_folder(parent=self.root, initialdir=initial, browse_files=True)
         except Exception as exc:
             self.notice("打开文件夹失败：%s" % _s(exc), error=True)
             return
@@ -3946,8 +4203,15 @@ class MarkdownWindow(DocumentActions):
         self.folder_arrows.schedule()
 
     def on_folder_select(self, event):
-        if not self.root_tree.identify_row(event.y):
+        row = self.root_tree.identify_row(event.y)
+        if not row:
             self.root_tree.selection_remove(*self.root_tree.selection())
+        elif row.startswith("r:"):
+            self.root_tree.selection_set(row)
+            self.root_tree.focus(row)
+            self.root_tree.focus_set()
+            self.folder_arrows.toggle(row)
+            return "break"
 
 
     def select_in_root_tree(self, info: dict) -> None:
@@ -4128,6 +4392,10 @@ class MarkdownWindow(DocumentActions):
         if not did or not self.cur_root:
             return
         if selection[0].startswith("r:"):
+            # The first mouse click already expands the directory. A second
+            # click in the same double-click must not immediately close it.
+            if event is not None and str(getattr(event, "type", "")) == "4":
+                return "break"
             self.folder_arrows.toggle(selection[0])
             return "break"
         if not did.lower().endswith(core.DOC_EXTS):
@@ -4286,30 +4554,53 @@ class MarkdownWindow(DocumentActions):
         except Exception as exc:
             self.notice("打开目录失败：%s" % _s(exc), error=True)
 
-    def remove_current_root(self) -> None:
-        """只从列表移除登记，不删除磁盘目录。"""
-        root = self.current_root()
-        if not root:
-            return
+    def show_history_menu(self, kind, event=None):
+        import tkinter as tk
+        combo = self.cmb_root if kind == "folder" else self.cmb
+        items = self.roots if kind == "folder" else self.projects
+        menu = tk.Menu(self.root, tearoff=0, bg=self.pal["bg"], fg=self.pal["fg"],
+                       activebackground=self.pal["accent"], activeforeground=self.pal["bg"])
+        menu.add_command(label="删除当前历史记录    Ctrl+Delete", command=lambda: self.remove_history(kind),
+                         state="normal" if combo.current() >= 0 else "disabled")
+        menu.add_command(label="清空历史记录…", command=lambda: self.remove_history(kind, all_records=True),
+                         state="normal" if items else "disabled")
         try:
-            from tkinter import messagebox
-            keep = messagebox.askyesno(
-                "从列表移除",
-                "只从 MDReader 的列表里移除「%s」，磁盘上的文件夹和文件都不会被删除。\n\n"
-                "继续吗？" % _s(root.get("name")), parent=self.root)
-        except Exception:
-            keep = False
-        if not keep:
-            return
+            menu.tk_popup(event.x_root if event else combo.winfo_rootx(),
+                          event.y_root if event else combo.winfo_rooty() + combo.winfo_height())
+        finally:
+            menu.grab_release()
+        return "break"
+
+    def remove_history(self, kind, *, all_records=False):
+        combo = self.cmb_root if kind == "folder" else self.cmb
+        items = self.roots if kind == "folder" else self.projects
+        index = combo.current()
+        targets = list(items) if all_records else items[index:index + 1] if index >= 0 else []
+        if not targets:
+            return "break"
+        label = "全部 %d 条记录" % len(targets) if all_records else "「%s」" % targets[0].get("name", "")
+        message = "将从%s列表移除%s。\n\n本地文件夹、项目和文件均会保留，已打开的文档和未保存修改也会保留。" % (
+            "我的文件夹" if kind == "folder" else "项目", label)
+        if SavePrompt(self.root, message, self.pal, self.ui_scale, forgetting=True).show() is not True:
+            return "break"
         try:
-            self.ws.folders.forget(_s(root.get("id")))
+            if kind == "folder":
+                for item in targets:
+                    self.ws.folders.forget(item["id"])
+                self._folder_signature = None
+                self.refresh_roots(force=True)
+                self._roots_seen = tuple(r.get("id") for r in self.roots)
+            else:
+                self.ws.forget_project_history(item["id"] for item in targets)
+                self.refresh_projects(history_only=True)
         except Exception as exc:
-            self.notice("移除失败：%s" % _s(exc), error=True)
-            return
-        self.cur_root = None
-        self._folder_signature = None
-        self.refresh_roots(force=True)
-        self.notice("已从列表移除「%s」，磁盘文件没有改动" % _s(root.get("name")))
+            self.notice("删除历史记录失败：%s" % _s(exc), error=True)
+            return "break"
+        self.notice("已删除历史记录，本地文件已保留")
+        return "break"
+
+    def remove_current_root(self) -> None:
+        self.remove_history("folder")
 
     def folder_watch_tick(self) -> None:
         """Tk 主线程上的 1.5 秒检查：有变化才重画树，没有就什么都不做。
@@ -4957,9 +5248,9 @@ class MarkdownWindow(DocumentActions):
             restyle = getattr(child, "_restyle_table", None)
             if restyle is not None:
                 restyle(self.pal, self.base_size)
-            formula = getattr(child, "_restyle_formula", None)
-            if formula is not None:
-                formula(self.pal, self.base_size)
+        refresh = getattr(self.preview, '_formula_refresh', None)
+        if refresh is not None:
+            refresh.request(self.pal, self.base_size)
 
     def _invalidate_styles(self):
         """Mark every widget stale; they are restyled when they are shown."""
@@ -4973,6 +5264,7 @@ class MarkdownWindow(DocumentActions):
         editor.grid(row=0, column=0, sticky="nsew")
         editor.grid_remove()
         editor.bind("<<Modified>>", self.on_modified)
+        self._install_shortcuts(editor)
         self._bind_navigation(editor)
         # 粘贴 TSV 时先给预览（F04）；普通粘贴不拦，交回 Tk 默认行为。
         editor.bind("<<Paste>>", self.on_editor_paste, add="+")
@@ -5150,17 +5442,16 @@ class MarkdownWindow(DocumentActions):
 
     def _bind_navigation(self, widget):
         for sequence in ('<Control-f>', '<Control-F>'):
-            widget.bind(sequence, self._key(self.toggle_find))
-        # Consume Shift+M before Text inserts an uppercase M. Extra modifiers
-        # must still reach their own shortcuts, notably Ctrl+Shift+M (formula).
+            widget.bind(sequence, self._unshifted_key(self.toggle_find))
+        # Use an accelerator that cannot consume ordinary uppercase M input.
         def jump(event):
-            if event.state & 0xC:  # Control or Alt
+            if event.state & 0x20008 or (event.state & 5) != 5:
                 return None
             return self._key(self.switch_at_selection)(event)
-        for sequence in ("<Shift-M>", "<Shift-m>"):
+        for sequence in ("<Control-Shift-E>", "<Control-Shift-e>"):
             widget.bind(sequence, jump)
-        widget.bind("<Control-Home>", self._key(lambda: self.document_edge(False)))
-        widget.bind("<Control-End>", self._key(lambda: self.document_edge(True)))
+        widget.bind("<Control-Home>", self._unshifted_key(lambda: self.document_edge(False)))
+        widget.bind("<Control-End>", self._unshifted_key(lambda: self.document_edge(True)))
 
     def document_edge(self, last=False):
         if self.active_tab is None:
@@ -5206,26 +5497,35 @@ class MarkdownWindow(DocumentActions):
             self.text.xview_moveto(saved.get("x", 0))
 
     def switch_at_selection(self):
-        from .navigation import map_selection, widget_text, widget_index
+        from .navigation import map_markdown_selection, widget_text, widget_index
         if self.active_tab is None:
             return
+        if self.composing():
+            self.notice("输入法组合中，先完成这次输入再定位", error=True)
+            return
+        from_preview = self.mode == "preview"
+        origin = widget_text(self.text)
         ranges = self.text.tag_ranges("sel")
-        selected = None
         if ranges:
-            origin = widget_text(self.text)
-            selected = (origin, len(widget_text(self.text, ranges[0])),
-                        len(widget_text(self.text, ranges[1])))
+            start = len(widget_text(self.text, ranges[0]))
+            end = len(widget_text(self.text, ranges[1]))
+        else:
+            position = self.text.index("@0,0" if from_preview else "insert")
+            start = end = len(widget_text(self.text, position))
+        source = self.get_text()
         self.toggle_mode()
-        if selected:
-            origin, start, end = selected
-            target = widget_text(self.text)
-            first, last = map_selection(origin, target, start, end)
-            a, b = widget_index(self.text, target, first), widget_index(self.text, target, last)
-            self.text.tag_remove("sel", "1.0", "end")
+        target = widget_text(self.text)
+        first, last = map_markdown_selection(source, origin if from_preview else target,
+                                            start, end, from_preview=from_preview)
+        a, b = widget_index(self.text, target, first), widget_index(self.text, target, last)
+        self.text.tag_remove("sel", "1.0", "end")
+        if ranges and a != b:
             self.text.tag_add("sel", a, b)
-            self.text.mark_set("insert", a)
-            self.text.see(a)
-            self.remember_view_position()
+        self.text.mark_set("insert", a)
+        # Let the newly shown view finish measuring wrapped lines before see().
+        self.root.update_idletasks()
+        self.text.see(a)
+        self.remember_view_position()
         self.text.focus_set()
 
     def toggle_mode(self) -> None:

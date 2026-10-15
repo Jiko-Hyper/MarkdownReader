@@ -21,6 +21,8 @@ def choose_pages(owner):
             error.configure(text='请输入有效页码或 all');return
         result[0]=text;dialog.destroy()
     tk.Button(dialog,text='开始识别',command=accept,bg=pal['button'],fg=pal['fg']).pack(pady=14)
+    entry.bind('<Return>', lambda _e: accept())
+    dialog.bind('<Escape>', lambda _e: dialog.destroy())
     dialog.protocol('WM_DELETE_WINDOW',dialog.destroy)
     dialog.update_idletasks()
     x=owner.root.winfo_rootx()+(owner.root.winfo_width()-dialog.winfo_reqwidth())//2

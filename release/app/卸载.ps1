@@ -2,8 +2,12 @@
 [CmdletBinding()]
 param([string]$InstallDir='', [switch]$Yes, [switch]$DeleteData, [switch]$NoPause,
     [string]$ShortcutDir=[Environment]::GetFolderPath('Desktop'),
-    [string]$StartMenuDir=(Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
+    [string]$StartMenuDir=(Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'),
+    [switch]$Gui, [int]$LauncherProcessId=0, [switch]$TemporaryRunner, [string]$ResultFile='')
 $ErrorActionPreference='Stop'
+$uninstallStatus='failed'
+$uninstallError=''
+$planFile=$null
 function Full-Path([string]$path) {
     if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.Path]::IsPathRooted($path)) { throw '安装记录必须包含完整的绝对路径。' }
     return [IO.Path]::GetFullPath($path).TrimEnd('\')
@@ -32,11 +36,19 @@ function Check-Directory([string]$path) {
     }
 }
 try {
+    # The native entry point exits before we check processes or delete its EXE.
+    if ($LauncherProcessId -gt 0) { Wait-Process -Id $LauncherProcessId -ErrorAction SilentlyContinue }
+    if ($Gui) { Add-Type -AssemblyName System.Windows.Forms }
     if ($Yes -and -not $DeleteData) { throw '完整卸载会删除数据；自动化须同时指定 -Yes -DeleteData，不能沿用旧版 -Yes 命令。' }
-    if ($InstallDir) { $requested=Full-Path $InstallDir; $recordPath=Join-Path $requested 'installation.json' }
+    if ($InstallDir) {
+        $requested=Full-Path $InstallDir; $recordPath=Join-Path $requested 'resources\installation.json'
+        if (-not (Test-Path -LiteralPath $recordPath)) { $recordPath=Join-Path $requested 'installation.json' }
+    }
     else {
-        $recordPath=Join-Path $PSScriptRoot 'installation.json'
-        if (-not (Test-Path -LiteralPath $recordPath)) { $recordPath=Join-Path $PSScriptRoot 'installed-target.json' }
+        $recordRoot=$PSScriptRoot
+        if ((Split-Path -Leaf $recordRoot) -eq 'setup') { $recordRoot=Split-Path -Parent $recordRoot }
+        $recordPath=Join-Path $recordRoot 'installation.json'
+        if (-not (Test-Path -LiteralPath $recordPath)) { $recordPath=Join-Path $recordRoot 'installed-target.json' }
     }
     if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { throw '找不到安装记录。请使用已安装目录或原安装包中的卸载入口，或通过 -InstallDir 指定安装目录；不会删除脚本所在文件夹。' }
     $record=Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -48,12 +60,15 @@ try {
     if ($InstallDir -eq $ws -or $InstallDir.StartsWith($ws+'\',[StringComparison]::OrdinalIgnoreCase) -or $ws.StartsWith($InstallDir+'\',[StringComparison]::OrdinalIgnoreCase)) { throw '两个目标目录重叠。' }
     Check-Directory $InstallDir
     Check-Directory $ws
-    $actualPath=Join-Path $InstallDir 'installation.json'
+    $payload=$InstallDir
+    if (Test-Path -LiteralPath (Join-Path $InstallDir 'resources\installation.json') -PathType Leaf) { $payload=Join-Path $InstallDir 'resources' }
+    $actualPath=Join-Path $payload 'installation.json'
     if (-not (Test-Path -LiteralPath $actualPath -PathType Leaf)) { throw '记录指向的程序目录不存在或已移动；不会改为删除当前文件夹。' }
     $actual=Get-Content -LiteralPath $actualPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($actual.schema -ne 2 -or $actual.installation_id -ne $record.installation_id -or (Full-Path $actual.install_dir) -ne $InstallDir -or (Full-Path $actual.workspace) -ne $ws) { throw '安装记录与目标程序不一致。' }
-    foreach ($name in @('MDReader.exe','main.py','mdreader\core.py','runtime\pythonw.exe')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $name) -PathType Leaf)) { throw "无法确认目标安装，缺少 $name。" }
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir 'MDReader.exe') -PathType Leaf)) { throw '无法确认目标安装，缺少主程序。' }
+    foreach ($name in @('main.py','mdreader\core.py','runtime\pythonw.exe')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $payload $name) -PathType Leaf)) { throw "无法确认目标安装，缺少 $name。" }
     }
     if (Test-Path -LiteralPath $ws) {
         $markerPath=Join-Path $ws '.mdreader-installations.json'
@@ -61,14 +76,30 @@ try {
         $marker=Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $owned=@($marker.installations | Where-Object { $_.id -eq $record.installation_id -and (Full-Path $_.install_dir) -eq $InstallDir })
         if ($marker.schema -ne 1 -or $owned.Count -ne 1) { throw '数据目录与该安装记录不匹配。' }
-        if (@($marker.installations).Count -gt 1) { Write-Host '注意：该数据目录还登记给其他安装，继续将一并清空共享数据。' -ForegroundColor Yellow }
+        if (@($marker.installations).Count -gt 1) { Write-Host '注意：该目录由多个安装共享，本程序配置将清除，项目和用户文件保留。' -ForegroundColor Yellow }
     }
     $running=Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($InstallDir+'\',[StringComparison]::OrdinalIgnoreCase) }
     if ($running) { throw '请先保存文档并关闭此安装的全部窗口，再完整卸载。' }
-    Write-Host "将完整删除程序目录及全部内容: $InstallDir" -ForegroundColor Yellow
-    Write-Host "将完整删除数据目录及全部内容: $ws" -ForegroundColor Yellow
-    Write-Host '数据目录内的文档、项目、配置和密钥均会删除，请先备份。两个目录之外的原始文件、下载包和升级备份不受影响。' -ForegroundColor Yellow
-    if (-not $Yes -and (Read-Host '确认永久删除上述两个目录请输入 DELETE；其他输入取消') -cne 'DELETE') { Write-Host '已取消，两个目录均未修改。'; return }
+    $planner=Join-Path $payload 'mdreader\uninstalling.py'
+    $python=Join-Path $payload 'runtime\python.exe'
+    if (-not (Test-Path -LiteralPath $planner) -or -not (Test-Path -LiteralPath $python)) { throw '缺少保留用户文件的卸载组件，请先使用新版测试安装包升级。' }
+    $planFile=[IO.Path]::GetTempFileName()
+    & $python $planner --program $InstallDir --workspace $ws --out $planFile
+    if ($LASTEXITCODE -ne 0) { throw '无法核对程序文件清单，未执行删除。' }
+    $plan=Get-Content -LiteralPath $planFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($plan.schema -ne 1) { throw '卸载计划无效。' }
+    Write-Host "将删除程序文件: $InstallDir" -ForegroundColor Yellow
+    Write-Host "将清除配置、API 密钥、历史与缓存: $ws" -ForegroundColor Yellow
+    Write-Host ("保留项目及用户自己的文件（{0} 个文件）；重装后必须重新配置 API。" -f $plan.retained_files) -ForegroundColor Green
+    if (-not $Yes) {
+        if ($Gui) {
+            $message="将卸载程序并清除本程序的配置、API 密钥、历史记录、插件与缓存：`n`n程序：$InstallDir`n`n配置：$ws`n`n保留用户项目及自有文件。重装后必须重新配置 API。`n`n确认继续卸载？"
+            $confirmed=[System.Windows.Forms.MessageBox]::Show($message,'MDReader 完整卸载',
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,[System.Windows.Forms.MessageBoxIcon]::Warning,
+                [System.Windows.Forms.MessageBoxDefaultButton]::Button2) -eq [System.Windows.Forms.DialogResult]::Yes
+        } else { $confirmed=(Read-Host '确认永久删除上述两个目录请输入 DELETE；其他输入取消') -ceq 'DELETE' }
+        if (-not $confirmed) { $uninstallStatus='cancelled'; Write-Host '已取消，两个目录均未修改。'; return }
+    }
     $exe=Join-Path $InstallDir 'MDReader.exe'
     $shell=New-Object -ComObject WScript.Shell
     $shortcuts=@()
@@ -79,11 +110,19 @@ try {
             }
         }
     }
-    # Recheck exact recorded absolute paths before recursive deletion.
+    # Delete only inventoried program/state files, never recurse through user data.
     Check-Directory $InstallDir
     Check-Directory $ws
-    if (Test-Path -LiteralPath $ws) { Remove-Item -LiteralPath $ws -Recurse -Force }
-    Remove-Item -LiteralPath $InstallDir -Recurse -Force
+    foreach ($name in $plan.files) {
+        $item=Full-Path $name
+        if (-not ($item.StartsWith($InstallDir+'\',[StringComparison]::OrdinalIgnoreCase) -or $item.StartsWith($ws+'\',[StringComparison]::OrdinalIgnoreCase))) { throw '卸载计划越过安装目录。' }
+        if (Test-Path -LiteralPath $item -PathType Leaf) { Remove-Item -LiteralPath $item -Force }
+    }
+    foreach ($name in $plan.directories) {
+        $item=Full-Path $name
+        if (-not ($item -eq $InstallDir -or $item -eq $ws -or $item.StartsWith($InstallDir+'\',[StringComparison]::OrdinalIgnoreCase) -or $item.StartsWith($ws+'\',[StringComparison]::OrdinalIgnoreCase))) { throw '卸载目录计划越界。' }
+        if ((Test-Path -LiteralPath $item -PathType Container) -and @(Get-ChildItem -LiteralPath $item -Force).Count -eq 0) { Remove-Item -LiteralPath $item -Force }
+    }
     foreach ($link in $shortcuts) { Remove-Item -LiteralPath $link -Force }
     $key='HKCU:\Software\Classes\MDReader.md'
     $command="$key\shell\open\command"
@@ -92,6 +131,41 @@ try {
         $openWith='HKCU:\Software\Classes\.md\OpenWithProgids'
         if (Test-Path -LiteralPath $openWith) { Remove-ItemProperty -LiteralPath $openWith -Name 'MDReader.md' -ErrorAction SilentlyContinue }
     }
-    Write-Host '完整卸载完成：已删除记录中的程序与数据两个目录。旧任务栏图标请自行取消固定。' -ForegroundColor Green
-} catch { Write-Host "卸载失败: $($_.Exception.Message)" -ForegroundColor Red; throw }
-finally { if (-not $NoPause) { Read-Host '按 Enter 关闭窗口' | Out-Null } }
+    $appKey='HKCU:\Software\Classes\Applications\MDReader.exe'
+    $appCommand="$appKey\shell\open\command"
+    if ((Test-Path -LiteralPath $appCommand) -and ((Get-Item -LiteralPath $appCommand).GetValue('') -eq ('"{0}" --open "%1"' -f $exe))) {
+        Remove-Item -LiteralPath $appKey -Recurse -Force
+    }
+    $capabilities='HKCU:\Software\MDReader\Capabilities'
+    if ((Test-Path -LiteralPath $capabilities) -and ((Get-Item -LiteralPath $capabilities).GetValue('ApplicationIcon') -eq ('"{0}",0' -f $exe))) {
+        Remove-Item -LiteralPath $capabilities -Recurse -Force
+        $registeredApps='HKCU:\Software\RegisteredApplications'
+        if ((Test-Path -LiteralPath $registeredApps) -and ((Get-Item -LiteralPath $registeredApps).GetValue('MDReader') -eq 'Software\MDReader\Capabilities')) {
+            Remove-ItemProperty -LiteralPath $registeredApps -Name 'MDReader' -ErrorAction SilentlyContinue
+        }
+    }
+    Write-Host '卸载完成：程序配置及 API 密钥已清除，项目和用户文件已保留。重装后请重新配置 API。' -ForegroundColor Green
+    $uninstallStatus='removed'
+    if ($Gui) { [System.Windows.Forms.MessageBox]::Show('卸载完成，程序配置和 API 密钥已清除。项目与用户文件已保留，重装后请重新配置 API。','MDReader 完整卸载') | Out-Null }
+} catch {
+    $uninstallError=$_.Exception.Message
+    Write-Host "卸载失败: $uninstallError" -ForegroundColor Red
+    if ($Gui) { [System.Windows.Forms.MessageBox]::Show("卸载失败：$uninstallError",'MDReader 完整卸载') | Out-Null }
+    throw
+} finally {
+    if ($planFile -and (Test-Path -LiteralPath $planFile -PathType Leaf)) { Remove-Item -LiteralPath $planFile -Force }
+    if ($ResultFile) {
+        $result=@{status=$uninstallStatus;error=$uninstallError} | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText([IO.Path]::GetFullPath($ResultFile),$result,[Text.UTF8Encoding]::new($false))
+    }
+    if ($TemporaryRunner) {
+        $runnerRoot=[IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
+        $tempRoot=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+        if ((Split-Path -Parent $runnerRoot) -eq $tempRoot -and (Split-Path -Leaf $runnerRoot) -match '^MDReader-uninstall-[0-9a-f]{8}-[0-9a-f]{8}$') {
+            # Only these two files belong to this runner. Never recurse through temp.
+            Remove-Item -LiteralPath (Join-Path $runnerRoot 'installation.json'),(Join-Path $runnerRoot 'runner.ps1') -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $runnerRoot -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not $NoPause) { Read-Host '按 Enter 关闭窗口' | Out-Null }
+}

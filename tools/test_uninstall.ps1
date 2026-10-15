@@ -22,6 +22,14 @@ function Fixture($name) {
     @{schema=1;installations=@(@{id=$id;install_dir=$dir})}|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $data '.mdreader-installations.json') -Encoding UTF8
     Copy-Item -LiteralPath $script -Destination $dir
     Copy-Item -LiteralPath (Join-Path $root 'release\app\卸载.cmd') -Destination $dir
+    Copy-Item -LiteralPath (Join-Path $root 'mdreader\uninstalling.py') -Destination (Join-Path $dir 'mdreader')
+    foreach ($name in @('python.exe','python3.dll','python312.dll','python312.zip','python312._pth','vcruntime140.dll','vcruntime140_1.dll','zlib1.dll')) {
+        $runtimeFile=Join-Path $root ('build\runtime\'+$name)
+        if (Test-Path -LiteralPath $runtimeFile) { Copy-Item -LiteralPath $runtimeFile -Destination (Join-Path $dir 'runtime') }
+    }
+    $owned=@(Get-ChildItem -LiteralPath $dir -Recurse -File | ForEach-Object { $_.FullName.Substring($dir.Length+1).Replace('\','/') })
+    @{schema=1;files=$owned+@('program-files.json','卸载.exe')} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $dir 'program-files.json') -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $data 'ai-providers.json') '{"selected":"deepseek","profiles":{}}'
     return $dir
 }
 function Link($name,$target,$dir) {
@@ -56,11 +64,50 @@ try {
     Assert (-not (Test-Path -LiteralPath $mine)) 'Own desktop shortcut remains'
     Assert (-not (Test-Path -LiteralPath $menu)) 'Own Start menu shortcut remains'
     Assert (Test-Path -LiteralPath $other) 'Other installation shortcut deleted'
-    Assert (-not (Test-Path -LiteralPath ($dir+' data'))) 'Data directory remains'
+    Assert (Test-Path -LiteralPath ($dir+' data\notes.md')) 'User document deleted'
+    Assert (-not (Test-Path -LiteralPath ($dir+' data\ai-providers.json'))) 'API configuration remains'
+    # The native EXE must exit the installation before removing itself. Test
+    # both the installed entry and the original download-package entry.
+    $native=Join-Path $root 'build\launcher\卸载.exe'
+    Assert (Test-Path -LiteralPath $native) 'Build the native uninstaller first'
+    foreach ($fromPackage in @($false,$true)) {
+        $label=if ($fromPackage) { 'native package' } else { 'native 中文 !' }
+        $dir=Fixture $label
+        $data=$dir+' data'
+        New-Item -ItemType Directory -Path (Join-Path $data 'components\deep'),(Join-Path $dir 'extra\deep') | Out-Null
+        Set-Content -LiteralPath (Join-Path $data 'components\deep\model.bin') 'model'
+        @{content_id='deep';files=@('model.bin')} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $data 'components\deep\.installed.json') -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $dir 'extra\deep\personal.txt') 'inside selected directory'
+        Copy-Item -LiteralPath $native -Destination (Join-Path $dir '卸载.exe')
+        $entry=Join-Path $dir '卸载.exe'
+        $package=$null
+        if ($fromPackage) {
+            $package=Join-Path $scratch 'native download package'
+            New-Item -ItemType Directory -Path $package | Out-Null
+            Copy-Item -LiteralPath $native,$script -Destination $package
+            Copy-Item -LiteralPath (Join-Path $dir 'installation.json') -Destination (Join-Path $package 'installed-target.json')
+            $entry=Join-Path $package '卸载.exe'
+        }
+        $resultPath=Join-Path $scratch ($label+' result.json')
+        $nativeProcess=Start-Process -FilePath $entry -ArgumentList ('--yes --result-file "{0}"' -f $resultPath) -WindowStyle Hidden -PassThru
+        Assert ($nativeProcess.WaitForExit(10000)) 'Native entry did not release itself'
+        Assert ($nativeProcess.ExitCode -eq 0) 'Native uninstall could not launch'
+        $deadline=[datetime]::UtcNow.AddSeconds(20)
+        while (-not (Test-Path -LiteralPath $resultPath) -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
+        Assert (Test-Path -LiteralPath $resultPath) 'Native uninstall did not complete'
+        $outcome=Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert ($outcome.status -eq 'removed') ("Native uninstall failed: "+$outcome.error)
+        Assert (-not (Test-Path -LiteralPath (Join-Path $dir '卸载.exe'))) 'Native EXE did not remove itself'
+        Assert (Test-Path -LiteralPath (Join-Path $dir 'extra\deep\personal.txt')) 'Native EXE removed a user file'
+        Assert (Test-Path -LiteralPath (Join-Path $data 'notes.md')) 'Native EXE removed a user document'
+        Assert (-not (Test-Path -LiteralPath (Join-Path $data 'ai-providers.json'))) 'Native EXE kept API configuration'
+        Assert (-not (Test-Path -LiteralPath (Join-Path $data 'components\deep\model.bin'))) 'Native EXE kept an owned component'
+        if ($fromPackage) { Assert (Test-Path -LiteralPath $entry) 'Download package must remain outside recorded targets' }
+    }
     $dir=Fixture 'personal files'
     Set-Content -LiteralPath (Join-Path $dir 'my-notes.md') 'personal'
     & $script -InstallDir $dir -Yes -DeleteData -NoPause -ShortcutDir $desktop -StartMenuDir $startMenu
-    Assert (-not (Test-Path -LiteralPath $dir)) 'Full uninstall kept files inside program directory'
+    Assert (Test-Path -LiteralPath (Join-Path $dir 'my-notes.md')) 'User file in program directory deleted'
     Assert (-not (Test-Path -LiteralPath (Join-Path $dir 'MDReader.exe'))) 'Program still installed'
     # Damaged packages, invalid config, overlapping data and explicit purge all refuse.
     # Regression: launching from the download package must delete the recorded targets only.
@@ -75,7 +122,8 @@ try {
     finally { Pop-Location }
     Assert ($LASTEXITCODE -eq 0) 'Source wrapper failed'
     Assert (-not (Test-Path -LiteralPath $dir)) 'Recorded program target remains'
-    Assert (-not (Test-Path -LiteralPath ($dir+' data'))) 'Recorded data target remains'
+    Assert (Test-Path -LiteralPath ($dir+' data\notes.md')) 'Recorded user document deleted'
+    Assert (-not (Test-Path -LiteralPath ($dir+' data\ui-settings.json'))) 'Recorded application settings remain'
     Assert ((Get-Content -LiteralPath (Join-Path $source 'outside.md')) -eq 'outside') 'Source package was deleted'
     $dir=Fixture 'old command'
     $failed=$false

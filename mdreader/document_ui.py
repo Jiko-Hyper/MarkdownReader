@@ -146,6 +146,8 @@ class DocumentActions:
 
     def show_outline(self):
         tk = self._tk; dialog=tk.Toplevel(self.root); dialog.title('标题导航')
+        dialog.transient(self.root)
+        dialog.bind('<Escape>', lambda _e: dialog.destroy())
         box=tk.Listbox(dialog,width=50,height=22,bg=self.pal['bg'],fg=self.pal['fg']); box.pack(fill='both',expand=True)
         headings=[]
         if self.mode == 'source':
@@ -164,6 +166,8 @@ class DocumentActions:
         def jump(_e=None):
             if box.curselection(): self.text.see(headings[box.curselection()[0]][0])
         box.bind('<<ListboxSelect>>',jump)
+        box.bind('<Return>', jump)
+        box.focus_set()
 
     def save_reading_positions(self):
         self.stash_tab()

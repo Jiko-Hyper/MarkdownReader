@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -121,6 +123,101 @@ class FormulaPreviewTests(unittest.TestCase):
         self.assertEqual(len(found), 2)
         self.assertGreater(int(found[0].image.width()), before_width,
                            "放大字号后公式图片也要跟着变大")
+
+    def drain_formulas(self):
+        refresh = self.win.preview._formula_refresh
+        deadline = time.perf_counter() + 5
+        while refresh.remaining and time.perf_counter() < deadline:
+            self.win.root.update()
+            time.sleep(.002)
+        self.assertFalse(refresh.remaining, 'Formula updates did not finish')
+
+    def test_many_formulas_defer_rendering_and_follow_latest_zoom(self):
+        self.show(''.join('正文 $x^{%d}$\n\n' % n for n in range(30)))
+        first = self.formulas()[0]
+        old_width = first.image.width()
+        from mdreader import formula
+        with mock.patch.object(formula, 'cached', wraps=formula.cached) as cached:
+            self.win.base_size += 2
+            self.win._apply_zoom()
+            self.assertEqual(cached.call_count, 0, 'Zoom must not redraw the whole document synchronously')
+            self.assertTrue(self.win.preview._formula_refresh.remaining)
+            self.win.base_size += 2
+            self.win._apply_zoom()
+            self.drain_formulas()
+        self.assertGreater(first.image.width(), old_width)
+        self.assertEqual(self.win.preview._formula_refresh.style[1], self.win.base_size)
+        self.assertEqual(len(self.formulas()), 30)
+
+    def test_duplicate_formulas_share_decoded_images_and_zoom_back_reuses_them(self):
+        self.show('正文 $x^{2}$\n\n' * 20)
+        original = self.formulas()[0].image
+        self.assertTrue(all(label.image is original for label in self.formulas()))
+        self.win.base_size += 1
+        self.win._apply_zoom()
+        self.drain_formulas()
+        from mdreader import formula
+        with mock.patch.object(formula, 'cached', side_effect=AssertionError('Decoded image cache missed')):
+            self.win.base_size -= 1
+            self.win._apply_zoom()
+            self.drain_formulas()
+        self.assertTrue(all(label.image is original for label in self.formulas()))
+
+    def test_switching_document_cancels_pending_formula_updates(self):
+        self.show(''.join('正文 $x^{%d}$\n\n' % n for n in range(20)))
+        self.win.base_size += 1
+        self.win._apply_zoom()
+        previous = self.win.preview._formula_refresh
+        self.assertTrue(previous.remaining)
+        self.win.source = '# 新文档\n\n保留新正文'
+        self.win.render()
+        self.win.root.update()
+        self.assertIsNone(previous.job)
+        self.assertFalse(previous.remaining)
+        self.assertIn('保留新正文', self.win.preview.get('1.0', 'end-1c'))
+
+    def test_zoom_with_memory_only_formula_cache_still_resizes(self):
+        self.show('正文 $x^{2}$\n')
+        label = self.formulas()[0]
+        before = label.image.width()
+        self.win.preview._formula_cache = ''
+        self.win.base_size += 3
+        self.win._apply_zoom()
+        self.assertGreater(label.image.width(), before)
+
+    def test_slow_formula_worker_does_not_block_scrolling_or_ui_timers(self):
+        self.show(''.join('正文 $x^{%d}$\n\n' % n for n in range(20)))
+        started, release = threading.Event(), threading.Event()
+        main_thread = threading.get_ident()
+        worker_threads = []
+        prepare = winui._prepare_formula
+        def blocked(*args):
+            worker_threads.append(threading.get_ident())
+            started.set()
+            release.wait(2)
+            return prepare(*args)
+        with mock.patch.object(winui, '_prepare_formula', blocked):
+            try:
+                self.win.base_size += 1
+                self.win._apply_zoom()
+                deadline = time.perf_counter() + 2
+                while not started.is_set() and time.perf_counter() < deadline:
+                    self.win.root.update()
+                    time.sleep(.002)
+                self.assertTrue(started.is_set())
+                heartbeat = []
+                self.win.root.after(0, lambda: heartbeat.append(True))
+                before = self.win.preview.index('@0,0')
+                self.win.preview.yview_scroll(1, 'pages')
+                self.win.root.update()
+                self.assertTrue(heartbeat, 'UI timer must run while formula rendering is blocked')
+                self.assertNotEqual(before, self.win.preview.index('@0,0'))
+                self.assertTrue(self.win.preview._formula_refresh.remaining)
+            finally:
+                release.set()
+            self.drain_formulas()
+        self.assertTrue(worker_threads)
+        self.assertNotIn(main_thread, worker_threads)
 
     # -- 失败与边界 ------------------------------------------------------
     def test_a_formula_that_cannot_be_drawn_keeps_its_source(self):

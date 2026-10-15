@@ -1386,6 +1386,16 @@ def png_size(data: bytes) -> tuple[int, int]:
 def cached(directory: str, tex: str, *, size: float = DEFAULT_SIZE, display: bool = False,
            theme: str = "light", scale: float = 1.0, color: str = "#1f2933",
            background: str = "#ffffff", weight: int = 400) -> dict:
+    # Windows does not allow replacing a PNG while another thread has it open.
+    # Reuse the renderer's reentrant lock for the complete read/write operation.
+    with _gdi_lock:
+        return _cached(directory, tex, size=size, display=display, theme=theme,
+                       scale=scale, color=color, background=background, weight=weight)
+
+
+def _cached(directory: str, tex: str, *, size: float = DEFAULT_SIZE, display: bool = False,
+            theme: str = "light", scale: float = 1.0, color: str = "#1f2933",
+            background: str = "#ffffff", weight: int = 400) -> dict:
     """按缓存键取图；没有就渲染一次并落盘。
 
     返回 ``{"ok", "path", "key", "width", "height", "cached", "reason"}``。写盘失败
@@ -1411,7 +1421,9 @@ def cached(directory: str, tex: str, *, size: float = DEFAULT_SIZE, display: boo
     if path:
         try:
             os.makedirs(directory, exist_ok=True)
-            temporary = path + ".tmp"
+            # HTTP rendering and the reading worker can populate the same key.
+            # Each writer must own its temporary file before atomic replacement.
+            temporary = path + '.%d.%d.tmp' % (os.getpid(), threading.get_ident())
             with open(temporary, "wb") as handle:
                 handle.write(result["png"])
             os.replace(temporary, path)

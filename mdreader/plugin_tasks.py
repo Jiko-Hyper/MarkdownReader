@@ -248,20 +248,28 @@ class TaskManager:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         command = self._worker_command()
         env = self._env()
+        from .components import ComponentStore
+        components = ComponentStore(self.store.workspace, app=self.worker_dir)
+        photo = components.locate('photo-ocr')
+        env.pop('MDREADER_PHOTO_RUNTIME', None)
+        if photo:
+            env['MDREADER_PHOTO_RUNTIME'] = str(photo)
         if (request.get("format") or {}).get("format") == "scan-md":
             from pathlib import Path
             app = Path(self.worker_dir)
-            runtime = next((p for p in (app / "scan-runtime", app / "build/scan-runtime-portable")
-                            if (p / "python.exe").is_file()), app / "build/scan-runtime")
+            runtime = components.locate('scan-engine')
+            models = components.locate('scan-models')
+            if runtime is None or models is None:
+                raise P.TaskError("扫描识别组件未安装，请在“更多 → 识别组件管理”中下载或导入组件包")
             python = runtime / "python.exe"
             if not python.is_file():
                 python = runtime / "Scripts/python.exe"
             if not python.is_file():
                 raise P.TaskError("扫描识别组件未安装，请使用包含离线扫描组件的完整安装包")
             command = [str(python), str(Path(self.worker_dir) / "mdreader/plugin_worker.py")]
-            env["MINERU_HOME"] = str(runtime / "models-home")
+            env["MINERU_HOME"] = str(models)
             env["MINERU_MODEL_SOURCE"] = "local"
-            env["MINERU_CONFIG"] = str(runtime / "models-home/config.yaml")
+            env["MINERU_CONFIG"] = str(models / "config.yaml")
             env["HF_HUB_OFFLINE"] = "1"
             env["MODELSCOPE_OFFLINE"] = "1"
             env.pop("PYTHONPATH", None)

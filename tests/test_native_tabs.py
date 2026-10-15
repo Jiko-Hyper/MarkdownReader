@@ -55,7 +55,7 @@ class NativeTabsTests(unittest.TestCase):
         w.open_local_files(paths)
         self.assertEqual(len(w.tabs), 20)
         self.assertEqual(len(w._editors), 20, "每个标签应有自己的编辑控件")
-        self.assertEqual(len(w._imes), 22, "20 个编辑控件加预览和搜索框，共用窗口钩子")
+        self.assertEqual(len(w._imes), 24, "20 个编辑控件加预览和三个搜索输入框，共用窗口钩子")
         hooks = {id(adapter.hook) for adapter in w._imes if adapter.hook is not None}
         self.assertEqual(len(hooks), 1,
                          "整窗只应安装一个原生钩子：不能为每个标签各装一个窗口子类")
@@ -70,7 +70,7 @@ class NativeTabsTests(unittest.TestCase):
                 w.close_tab(tab)
         self.assertEqual(w.tabs, [])
         self.assertEqual(w._editors, {}, "关闭标签后不应残留编辑控件")
-        self.assertEqual(len(w._imes), 2, "只应剩下预览和搜索框的组合适配项")
+        self.assertEqual(len(w._imes), 4, "只应剩下预览和三个搜索输入框的组合适配项")
         self.assertEqual(len([c for c in w.body.winfo_children() if c.winfo_class() == "Canvas"]),
                          canvases_before, "关闭标签后不应残留组合浮层画布")
         self.assertIsNone(w.editor)

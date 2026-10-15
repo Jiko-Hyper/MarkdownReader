@@ -37,7 +37,7 @@ from . import tables as TB
 from .storage import atomic_write, is_within, safe_join
 
 APP_NAME = "MDReader"
-APP_VERSION = "0.4.11"
+APP_VERSION = "0.4.20"
 WS_DIRNAME = ".mdreader"
 PROJECT_FILE = "project.json"
 DOC_EXTS = (".md", ".markdown", ".mdown", ".mkd", ".txt")
@@ -236,8 +236,25 @@ class Workspace:
         return pdir
 
     # -- scanning --------------------------------------------------------
-    def list_projects(self):
+    def project_history_hidden(self):
+        try:
+            with open(os.path.join(self.root, "project-history-hidden.json"), encoding="utf-8") as handle:
+                data = json.load(handle)
+        except FileNotFoundError:
+            return set()
+        if not isinstance(data, list) or any(not isinstance(pid, str) for pid in data):
+            raise ValueError("项目历史记录无效")
+        return set(data)
+
+    def forget_project_history(self, pids):
+        hidden = self.project_history_hidden()
+        hidden.update(pids)
+        self._atomic_write(os.path.join(self.root, "project-history-hidden.json"),
+                           json.dumps(sorted(hidden), ensure_ascii=False, indent=2))
+
+    def list_projects(self, *, include_hidden=False):
         items = []
+        hidden = set() if include_hidden else self.project_history_hidden()
         if not os.path.isdir(self.projects_dir):
             return items
         locations = {entry: os.path.join(self.projects_dir, entry)
@@ -247,6 +264,8 @@ class Workspace:
             if not os.path.isdir(pdir) or entry.startswith("."):
                 continue
             meta = self.read_meta(pdir)
+            if meta["id"] in hidden:
+                continue
             docs = self.scan_docs(pdir)
             chars = sum(d.get("size", 0) for d in docs)
             items.append({
@@ -2454,23 +2473,62 @@ def _decode_ps_output(raw: bytes) -> str:
     return data.decode("utf-8", "replace")
 
 
-def _run_ps(script: str):
+def open_default_app_settings():
+    """Repair this package's registration and let Windows confirm the default."""
+    if os.name != 'nt':
+        raise RuntimeError('默认打开器设置仅支持 Windows')
+    root = app_dir()
+    program = os.path.dirname(root) if os.path.basename(root) == 'resources' else root
+    exe = os.path.join(program, 'MDReader.exe')
+    script = os.path.join(root, 'setup', 'Register-FileAssociation.ps1')
+    if not os.path.isfile(script):
+        script = os.path.join(root, 'Register-FileAssociation.ps1')
+    if not os.path.isfile(exe) or not os.path.isfile(script):
+        raise RuntimeError('请从完整安装包启动 MDReader，再设置默认打开器')
+    quote = lambda value: "'" + value.replace("'", "''") + "'"
+    _run_ps("& %s -Exe %s -OpenDefaultSettings" % (quote(script), quote(exe)), check=True)
+
+
+def _run_ps(script: str, *, check=False, cancel_event=None):
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc = None
     for shell in ("powershell.exe", "pwsh"):
         try:
-            proc = subprocess.run(
-                [shell, "-NoProfile", "-NonInteractive", "-STA", "-Command",
-                 _PS_UTF8_PREAMBLE + script],
-                capture_output=True, timeout=600, creationflags=flags,
-            )
+            command = [shell, "-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-Command",
+                       _PS_UTF8_PREAMBLE + script]
+            if cancel_event is None:
+                proc = subprocess.run(command, capture_output=True, timeout=600, creationflags=flags)
+            else:
+                import time
+                with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      creationflags=flags) as child:
+                    deadline = time.monotonic() + 600
+                    while True:
+                        if cancel_event.is_set() or time.monotonic() >= deadline:
+                            child.kill()
+                            child.communicate()
+                            if cancel_event.is_set():
+                                return []
+                            raise subprocess.TimeoutExpired(command, 600)
+                        try:
+                            stdout, stderr = child.communicate(timeout=0.1)
+                            proc = subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+                            break
+                        except subprocess.TimeoutExpired:
+                            continue
             break
         except FileNotFoundError:
             continue
         except Exception:
+            if check:
+                raise
             return []
     if proc is None:
+        if check:
+            raise RuntimeError("未找到 PowerShell，无法打开文件夹选择窗口")
         return []
+    if check and proc.returncode:
+        raise RuntimeError(_decode_ps_output(proc.stderr).strip() or "文件夹选择窗口无法打开")
     out = _decode_ps_output(proc.stdout).strip()
     paths = [line.strip() for line in out.splitlines() if line.strip()]
     return paths
@@ -2507,15 +2565,82 @@ def _dialog_open_files(multi=True) -> list:
     return _run_ps(script)
 
 
-def _dialog_folder() -> list:
-    script = (
-        "Add-Type -AssemblyName System.Windows.Forms | Out-Null;"
-        "$d=New-Object System.Windows.Forms.FolderBrowserDialog;"
-        "$d.Description='选择包含 Markdown 的文件夹';"
-        "$d.ShowNewFolderButton=$true;"
-        "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){$d.SelectedPath}"
-    )
-    return _run_ps(script)
+def _dialog_folder(*, title="选择要打开的文件夹", initialdir="", parent=None,
+                   browse_files=False) -> list:
+    """Modern, DPI-aware Windows folder picker, shared with installation."""
+    helper = os.path.join(app_dir(), "setup", "Select-Folder.ps1")
+    if not os.path.isfile(helper):
+        helper = os.path.join(app_dir(), "Select-Folder.ps1")
+    if not os.path.isfile(helper):
+        helper = os.path.join(app_dir(), "release", "app", "Select-Folder.ps1")
+    if not os.path.isfile(helper):
+        raise FileNotFoundError("文件夹选择组件缺失，请重新安装 MDReader")
+    owner = 0
+    if parent is not None and os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        parent.update_idletasks()
+        get_parent = ctypes.windll.user32.GetParent
+        get_parent.argtypes = [wintypes.HWND]
+        get_parent.restype = wintypes.HWND
+        owner = get_parent(parent.winfo_id()) or parent.winfo_id()
+    def quoted(value):
+        return "'" + str(value or "").replace("'", "''") + "'"
+    script = ("$ErrorActionPreference='Stop'; & %s -Title %s -InitialPath %s -OwnerHandle %d"
+              % (quoted(helper), quoted(title), quoted(initialdir), owner))
+    if browse_files:
+        script += " -ShowFiles"
+    if parent is None:
+        return _run_ps(script, check=True)
+    # The native dialog sends window messages to its Tk owner. Keep Tk's
+    # message loop running while the child process shows the modal dialog.
+    import tkinter as tk
+    if getattr(parent, "_folder_picker_busy", False):
+        return []
+    parent._folder_picker_busy = True
+    finished = threading.Event()
+    cancelled = threading.Event()
+    outcome = {}
+    def pick():
+        try:
+            outcome["paths"] = _run_ps(script, check=True, cancel_event=cancelled)
+        except Exception as exc:
+            outcome["error"] = exc
+        finally:
+            finished.set()
+    done = tk.BooleanVar(parent, value=False)
+    timer = None
+    def poll():
+        nonlocal timer
+        if finished.is_set():
+            done.set(True)
+        else:
+            timer = parent.after(40, poll)
+    def on_destroy(event):
+        if event.widget is parent:
+            cancelled.set()
+            done.set(True)
+    binding = parent.bind("<Destroy>", on_destroy, add="+")
+    try:
+        threading.Thread(target=pick, daemon=True).start()
+        timer = parent.after(0, poll)
+        parent.wait_variable(done)
+    except tk.TclError:
+        cancelled.set()
+        return []
+    finally:
+        parent._folder_picker_busy = False
+        try:
+            if timer is not None:
+                parent.after_cancel(timer)
+            parent.unbind("<Destroy>", binding)
+        except tk.TclError:
+            pass
+    if cancelled.is_set():
+        return []
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["paths"]
 
 
 _PS_IMAGE_FILTER = ("图片 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)|*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp|"

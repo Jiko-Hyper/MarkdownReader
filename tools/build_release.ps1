@@ -18,7 +18,10 @@ param(
     [switch]$NoZip,
     [switch]$SkipRuntime,
     [string]$RuntimeDir = '',
-    [switch]$WithScanRuntime
+    [switch]$WithScanRuntime,
+    [switch]$SplitPackages,
+    [switch]$CoreOnly,
+    [string]$BaseManifest = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +31,7 @@ $distRoot = Join-Path $root 'build\release'
 $outDir = Join-Path $distRoot 'MarkdownReader'
 $runtimeDir = if ($RuntimeDir) { $RuntimeDir } else { Join-Path $root 'build\runtime' }
 $previousWorkspace = $env:MDREADER_HOME
+if ($CoreOnly -and ($WithScanRuntime -or $SplitPackages)) { throw 'CoreOnly 不能与完整识别组件打包同时使用。' }
 
 function Write-Step($t) { Write-Host "  $t" -ForegroundColor Gray }
 function Write-Ok($t)   { Write-Host "  [OK] $t" -ForegroundColor Green }
@@ -75,8 +79,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw '卸载回归测试失败。' }
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\test_install_dialog.ps1')
     if ($LASTEXITCODE -ne 0) { throw '安装目录选择窗口测试失败。' }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\test_file_association.ps1')
+    if ($LASTEXITCODE -ne 0) { throw '启动器名称、图标与文件关联测试失败。' }
     & (Join-Path $runtimeDir 'python.exe') (Join-Path $root 'tools\test_launcher.py')
     if ($LASTEXITCODE -ne 0) { throw '启动器参数测试失败。' }
+    & (Join-Path $runtimeDir 'python.exe') (Join-Path $root 'tools\test_installer_entry.py')
+    if ($LASTEXITCODE -ne 0) { throw '安装程序参数测试失败。' }
 
     # --------------------------------------------------- 3. 组装发布目录
     Write-Step '组装发布目录 ...'
@@ -92,20 +100,33 @@ try {
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
     # 3.1 程序源码（用户可见、可改；exe 就是跑这份源码）
-    foreach ($item in @('main.py', 'mdreader', 'webui', 'tests', 'tools', 'docs', 'assets')) {
+    foreach ($item in @('main.py', 'mdreader', 'webui')) {
         $source = Join-Path $root $item
         if (-not (Test-Path -LiteralPath $source)) { continue }
         Copy-Item -LiteralPath $source -Destination $outDir -Recurse -Force
     }
+    New-Item -ItemType Directory -Force -Path (Join-Path $outDir 'assets') | Out-Null
+    foreach ($item in @('icon.ico', 'icon.png')) {
+        Copy-Item -LiteralPath (Join-Path $root ('assets\'+$item)) -Destination (Join-Path $outDir 'assets')
+    }
+    New-Item -ItemType Directory -Force -Path (Join-Path $outDir 'tools') | Out-Null
+    foreach ($item in @('apply_update.py', 'migrate_layout.py')) {
+        Copy-Item -LiteralPath (Join-Path $root ('tools\'+$item)) -Destination (Join-Path $outDir 'tools')
+    }
     Get-ChildItem -LiteralPath $outDir -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
         ForEach-Object { Remove-BuildDirectory $_.FullName }
     Copy-Item -LiteralPath $launcher -Destination (Join-Path $outDir 'MDReader.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $root 'build\launcher\卸载.exe') -Destination (Join-Path $outDir '卸载.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $root 'build\launcher\安装.exe') -Destination (Join-Path $outDir '安装.exe') -Force
 
     # 3.2 免安装运行时
-    robocopy $runtimeDir (Join-Path $outDir 'runtime') /E /XD __pycache__ /NFL /NDL /NJH /NJS /NP | Out-Null
+    $runtimeCopyArgs = @($runtimeDir, (Join-Path $outDir 'runtime'), '/E', '/XD', '__pycache__')
+    if ($CoreOnly) { $runtimeCopyArgs += 'photo_ocr_runtime' }
+    $runtimeCopyArgs += @('/NFL', '/NDL', '/NJH', '/NJS', '/NP')
+    & robocopy @runtimeCopyArgs | Out-Null
     if ($LASTEXITCODE -ge 8) { throw '运行时复制失败。' }
 
-    if ($WithScanRuntime) {
+    if ($WithScanRuntime -or $SplitPackages) {
         $scanSource = Join-Path $root 'build\scan-runtime-portable'
         if (-not (Test-Path -LiteralPath (Join-Path $scanSource 'component-manifest.json'))) {
             throw '请先运行 tools/prepare_scan_runtime.py 准备可移动的离线扫描组件。'
@@ -119,7 +140,7 @@ try {
 
     # 3.3 官方离线插件：插件包（用户在工作区安装）+ 插件依赖（没装 Python 也能用）
     $pluginSource = Join-Path $root 'plugins'
-    foreach ($name in @('packages', 'official', 'dependencies')) {
+    foreach ($name in @('packages', 'dependencies')) {
         $source = Join-Path $pluginSource $name
         if (-not (Test-Path -LiteralPath $source)) { continue }
         $destination = Join-Path $outDir "plugins\$name"
@@ -133,20 +154,18 @@ try {
     }
 
     # 3.4 启动器、安装脚本、说明
-    Copy-Item -Path (Join-Path $appSource '*') -Destination $outDir -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $root 'docs\USAGE.md') -Destination (Join-Path $outDir '使用说明.md') -Force
-    Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination (Join-Path $outDir 'README.md') -Force
-    Copy-Item -LiteralPath (Join-Path $root 'README.en.md') -Destination (Join-Path $outDir 'README.en.md') -Force
-    Copy-Item -LiteralPath (Join-Path $root 'CONTRIBUTING.md') -Destination (Join-Path $outDir 'CONTRIBUTING.md') -Force
+    foreach ($item in @('安装到桌面.ps1', '更新程序.ps1', '卸载.ps1', 'Select-Folder.ps1', 'Register-FileAssociation.ps1')) {
+        Copy-Item -LiteralPath (Join-Path $appSource $item) -Destination $outDir
+    }
+    Copy-Item -LiteralPath (Join-Path $root '使用手册.md') -Destination (Join-Path $outDir '使用手册.md') -Force
     Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $outDir 'LICENSE') -Force
-    $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    @"
-MDReader $version
-打包时间: $stamp
-运行环境: Windows 10/11 x64（免安装，自带 Python 运行时）
-工作区    : %USERPROFILE%\MDReader
-入口      : MDReader.exe（等价于 runtime\pythonw.exe main.py）
-"@ | Set-Content -Path (Join-Path $outDir 'VERSION.txt') -Encoding UTF8
+    New-Item -ItemType Directory -Force -Path (Join-Path $outDir 'legal') | Out-Null
+    Copy-Item -LiteralPath (Join-Path $root 'docs\THIRD_PARTY_SCAN.md') -Destination (Join-Path $outDir 'legal')
+    Copy-Item -LiteralPath (Join-Path $root 'docs\licenses') -Destination (Join-Path $outDir 'legal') -Recurse
+
+    & (Join-Path $runtimeDir 'python.exe') (Join-Path $root 'tools\package_layout.py') $outDir
+    if ($LASTEXITCODE -ne 0) { throw '简洁目录组装失败。' }
+    $payloadDir = Join-Path $outDir 'resources'
 
     # --------------------------------------------------- 4. 冒烟验证
     Write-Step '在发布目录里验证 ...'
@@ -154,7 +173,7 @@ MDReader $version
     $env:MDREADER_HOME = Join-Path $outDir 'smoke-workspace'
 
     # 4.1 入口本身：用随包的解释器直接跑源码，输出能回来
-    $entryOut = & (Join-Path $outDir 'runtime\python.exe') (Join-Path $outDir 'main.py') --version 2>&1
+    $entryOut = & (Join-Path $payloadDir 'runtime\python.exe') (Join-Path $payloadDir 'main.py') --version 2>&1
     if ($LASTEXITCODE -ne 0 -or "$entryOut" -notmatch [regex]::Escape($version)) {
         throw "入口自检失败：$entryOut"
     }
@@ -165,12 +184,12 @@ MDReader $version
     $selfProcess = Start-Process -FilePath $exe -ArgumentList '--console --selftest' -WindowStyle Hidden -Wait -PassThru
     if ($selfProcess.ExitCode -ne 0) { throw "MDReader.exe --selftest 失败，退出码：$($selfProcess.ExitCode)" }
     Write-Ok 'exe 外壳与窗口自检通过（内嵌视图能创建并渲染）'
-    $diagnosticLog = Join-Path $outDir 'MDReader.log'
+    $diagnosticLog = Join-Path $payloadDir 'MDReader.log'
     if (Test-Path -LiteralPath $diagnosticLog) { Remove-Item -LiteralPath $diagnosticLog -Force }
 
     # 4.3 随包插件：装得上、启得来（启用会真的拉起一次插件工作进程做握手）
-    $smoke = Join-Path $outDir 'tools\smoke_release.py'
-    $smokeOut = & (Join-Path $outDir 'runtime\python.exe') $smoke 2>&1
+    $smoke = Join-Path $root 'tools\smoke_release.py'
+    $smokeOut = & (Join-Path $payloadDir 'runtime\python.exe') $smoke $payloadDir 2>&1
     if ($LASTEXITCODE -ne 0) { throw "随包插件自检失败：`n$smokeOut" }
     Write-Ok '随包插件自检通过（安装 + 启用 + 命令注册）'
 
@@ -182,13 +201,23 @@ MDReader $version
         ForEach-Object { Remove-BuildDirectory $_.FullName }
 
     # --------------------------------------------------- 5. 汇总 + 压缩
+    & (Join-Path $runtimeDir 'python.exe') (Join-Path $root 'tools\build_split_release.py') --source $outDir --out (Join-Path $root 'release') --inventory-only
+    if ($LASTEXITCODE -ne 0) { throw '程序文件清单生成失败。' }
     $files = Get-ChildItem -LiteralPath $outDir -Recurse -File
     $size = ($files | Measure-Object -Property Length -Sum).Sum
     Write-Host ''
     Write-Host "  打包完成：$outDir" -ForegroundColor Green
     Write-Host ("  文件数: {0}   大小: {1:N1} MB" -f $files.Count, ($size / 1MB))
 
-    if (-not $NoZip) {
+    if ($SplitPackages -or $CoreOnly) {
+        $splitArgs = @((Join-Path $root 'tools\build_split_release.py'), '--source', $outDir,
+                       '--out', (Join-Path $root 'release'))
+        if ($BaseManifest) { $splitArgs += @('--base', $BaseManifest) }
+        if ($CoreOnly) { $splitArgs += '--core-only' }
+        & (Join-Path $runtimeDir 'python.exe') @splitArgs
+        if ($LASTEXITCODE -ne 0) { throw '拆分安装包生成失败。' }
+    }
+    if (-not $NoZip -and -not $CoreOnly) {
         $zip = Join-Path $root "release\MarkdownReader-$version-win64.zip"
         if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
         Write-Step "压缩 -> $zip"

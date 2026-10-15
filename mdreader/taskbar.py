@@ -32,6 +32,8 @@ FMTID = '9f4c2855-9f79-4b39-a8d0-e1d42de1d5f3'
 def identity(root=None):
     root = Path(root or Path(__file__).resolve().parents[1]).resolve()
     exe = root / 'MDReader.exe'
+    if root.name == 'resources' and (root.parent / 'MDReader.exe').is_file():
+        exe = root.parent / 'MDReader.exe'
     if exe.is_file():
         return APP_ID, subprocess.list2cmdline([str(exe)]), str(exe) + ',0'
     return (DEV_ID, subprocess.list2cmdline([sys.executable, str(root / 'main.py')]),

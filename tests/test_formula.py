@@ -228,6 +228,19 @@ class CacheTests(unittest.TestCase):
         self.assertFalse(again["cached"], "坏掉的缓存要重画，而不是把坏文件当结果")
         self.assertEqual(formula.png_size(again["png"]), (again["width"], again["height"]))
 
+    def test_concurrent_writers_keep_a_valid_shared_cache_file(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            results = list(workers.map(lambda _: formula.cached(self.directory, r'\frac{x^2+1}{y}', size=24), range(12)))
+        self.assertTrue(all(result['ok'] and result['path'] for result in results))
+        paths = {result['path'] for result in results}
+        self.assertEqual(len(paths), 1)
+        image = Path(next(iter(paths))).read_bytes()
+        width, height, _ = decode_png(image)
+        self.assertGreater(width, 0)
+        self.assertGreater(height, 0)
+        self.assertEqual(list(Path(self.directory).glob('*.tmp')), [])
+
     def test_a_failed_cache_write_still_returns_the_picture(self):
         blocked = str(Path(self.temp.name, "文件占位"))
         Path(blocked).write_text("不是目录", encoding="utf-8")

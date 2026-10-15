@@ -913,6 +913,10 @@ class PluginStore:
                 raise PluginError("新版本与当前程序不兼容，已保留上一可用版本：%s"
                                   % manifest["app_version_range"])
             target = self._plugin_dir(manifest["id"], manifest["version"])
+            owned = [os.path.relpath(os.path.join(base, name), staging).replace(os.sep, '/')
+                     for base, _dirs, names in os.walk(staging) for name in names]
+            atomic_write(os.path.join(staging, '.mdreader-owned-files.json'),
+                         json.dumps({'schema': 1, 'files': owned + ['.mdreader-owned-files.json']}))
             os.makedirs(os.path.dirname(target), exist_ok=True)
             if os.path.exists(target):
                 shutil.rmtree(staging, ignore_errors=True)

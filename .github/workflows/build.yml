@@ -29,7 +29,7 @@ jobs:
       - name: 网页端脚本语法与回归
         run: |
           node --check webui/app.js
-          node --test tests/editor.test.cjs tests/webui_find.test.cjs
+          node --test tests/editor.test.cjs tests/webui_find.test.cjs tests/shortcuts.test.cjs
 
   release:
     needs: test

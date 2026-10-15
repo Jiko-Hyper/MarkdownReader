@@ -144,6 +144,8 @@ def main(argv=None) -> int:
         from pathlib import Path
         candidates = [Path(sys.executable).resolve().parent / "photo_ocr_runtime",
                       Path(__file__).resolve().parents[1] / "plugins/photo-ocr-dependencies"]
+        if os.environ.get('MDREADER_PHOTO_RUNTIME'):
+            candidates.insert(0, Path(os.environ['MDREADER_PHOTO_RUNTIME']))
         for candidate in candidates:
             if (candidate / "rapidocr/__init__.py").is_file():
                 sys.path.insert(0, str(candidate))

@@ -110,18 +110,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     wchar_t dir[MAX_PATH * 2];
     self_dir(dir, ARRAYSIZE(dir));
 
+    wchar_t payload[MAX_PATH * 2];
+    _snwprintf(payload, ARRAYSIZE(payload), L"%sresources\\", dir);
+    wchar_t probe[MAX_PATH * 4];
+    _snwprintf(probe, ARRAYSIZE(probe), L"%smain.py", payload);
+    if (!file_exists(probe)) wcscpy_s(payload, ARRAYSIZE(payload), dir);
     wchar_t python[MAX_PATH * 4];
     wchar_t script[MAX_PATH * 4];
-    _snwprintf(python, ARRAYSIZE(python), L"%sruntime\\pythonw.exe", dir);
-    _snwprintf(script, ARRAYSIZE(script), L"%smain.py", dir);
+    _snwprintf(python, ARRAYSIZE(python), L"%sruntime\\pythonw.exe", payload);
+    _snwprintf(script, ARRAYSIZE(script), L"%smain.py", payload);
 
     /* 免安装版的 Tcl/Tk 库在 runtime\tcl 下，先告诉解释器；
        已经设过的环境变量不动，免得盖掉用户自己的配置。 */
     wchar_t tclDir[MAX_PATH * 4];
     wchar_t tkDir[MAX_PATH * 4];
     wchar_t tclInit[MAX_PATH * 8];
-    _snwprintf(tclDir, ARRAYSIZE(tclDir), L"%sruntime\\tcl\\tcl8.6", dir);
-    _snwprintf(tkDir, ARRAYSIZE(tkDir), L"%sruntime\\tcl\\tk8.6", dir);
+    _snwprintf(tclDir, ARRAYSIZE(tclDir), L"%sruntime\\tcl\\tcl8.6", payload);
+    _snwprintf(tkDir, ARRAYSIZE(tkDir), L"%sruntime\\tcl\\tk8.6", payload);
     if (GetEnvironmentVariableW(L"TCL_LIBRARY", NULL, 0) == 0) {
         _snwprintf(tclInit, ARRAYSIZE(tclInit), L"%s\\init.tcl", tclDir);
         if (file_exists(tclInit)) {
@@ -136,15 +141,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     }
 
     if (!file_exists(script)) {
-        fail(L"找不到 main.py。\n\n请把 MDReader.exe 放在程序目录里（和 main.py、runtime\\ 同级），"
-             L"再双击运行。");
+        fail(L"程序资源不完整。\n\n请完整解压程序包，并保留 MDReader.exe 旁的 resources 文件夹。");
         return 2;
     }
     if (!file_exists(python)) {
-        _snwprintf(python, ARRAYSIZE(python), L"%sruntime\\python.exe", dir);
+        _snwprintf(python, ARRAYSIZE(python), L"%sruntime\\python.exe", payload);
         if (!file_exists(python)) {
-            fail(L"找不到 runtime\\pythonw.exe。\n\n这个免安装版需要和 runtime\\ 文件夹一起使用；"
-                 L"如果你只复制了 exe，请把整个文件夹解压完整。");
+            fail(L"程序运行资源不完整。\n\n请保留旁边的 resources 文件夹，完整解压后再运行。");
             return 3;
         }
     }
@@ -161,7 +164,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     if (wcsncmp(raw, L"--console", 9) == 0 &&
         (raw[9] == L'\0' || raw[9] == L' ' || raw[9] == L'\t')) {
         wchar_t consolePython[MAX_PATH * 4];
-        _snwprintf(consolePython, ARRAYSIZE(consolePython), L"%sruntime\\python.exe", dir);
+        _snwprintf(consolePython, ARRAYSIZE(consolePython), L"%sruntime\\python.exe", payload);
         if (file_exists(consolePython)) {
             wcscpy_s(python, ARRAYSIZE(python), consolePython);
             console_mode = TRUE;
@@ -178,7 +181,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     }
     _snwprintf(cmd, needed, L"\"%s\" \"%s\" %s", python, script, extra);
 
-    SetCurrentDirectoryW(dir);
+    SetCurrentDirectoryW(payload);
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -191,9 +194,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
 
     DWORD creation = console_mode ? 0 : CREATE_NO_WINDOW;
     if (console_mode) {
-        log_command(dir, cmd);
+        log_command(payload, cmd);
     }
-    if (!CreateProcessW(NULL, cmd, NULL, NULL, TRUE, creation, NULL, dir, &si, &pi)) {
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, TRUE, creation, NULL, payload, &si, &pi)) {
         wchar_t message[1024];
         _snwprintf(message, ARRAYSIZE(message),
                    L"启动 MDReader 失败（错误码 %lu）。\n\n命令行：\n%s", GetLastError(), cmd);

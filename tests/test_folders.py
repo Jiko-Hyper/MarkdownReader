@@ -399,7 +399,7 @@ class FolderDesktopTests(unittest.TestCase):
         self.win.root.withdraw()
         self.addCleanup(self.destroy_window, self.win.root)
 
-    def dialog_result(self):
+    def dialog_result(self, **_options):
         """What the picker returns. Subclasses can route this through PowerShell."""
         return [self.user]
 
@@ -541,7 +541,7 @@ class FolderDesktopTests(unittest.TestCase):
     def test_removing_the_folder_from_the_list_keeps_every_file(self):
         w = self.win
         w.open_user_folder()
-        with mock.patch("tkinter.messagebox.askyesno", return_value=True):
+        with mock.patch.object(winui.SavePrompt, "show", return_value=True):
             w.remove_current_root()
         self.assertEqual(w.roots, [])
         self.assertEqual(w.root_docs, [])
@@ -551,7 +551,7 @@ class FolderDesktopTests(unittest.TestCase):
     def test_declining_the_removal_keeps_the_registration(self):
         w = self.win
         w.open_user_folder()
-        with mock.patch("tkinter.messagebox.askyesno", return_value=False):
+        with mock.patch.object(winui.SavePrompt, "show", return_value=False):
             w.remove_current_root()
         self.assertEqual(len(w.roots), 1)
         self.assertTrue(os.path.isfile(os.path.join(self.user, "笔记.md")))
@@ -690,7 +690,7 @@ class FolderDialogRoundTripTests(FolderDesktopTests):
     在系统对话框里选中同一个目录只差一次点击。
     """
 
-    def dialog_result(self):
+    def dialog_result(self, **_options):
         return core._run_ps("'%s';" % self.user.replace("'", "''"))
 
     def test_opening_a_chinese_folder_displays_its_files_with_folders_collapsed(self):
@@ -1106,7 +1106,7 @@ class FolderDeleteWindowTests(unittest.TestCase):
 
     def test_removing_the_folder_from_the_list_still_deletes_nothing(self):
         w = self.win
-        with mock.patch("tkinter.messagebox.askyesno", return_value=True):
+        with mock.patch.object(winui.SavePrompt, "show", return_value=True):
             w.remove_current_root()
         self.assertTrue(os.path.isfile(self.path), "「从列表移除」与「删除」必须分清")
 

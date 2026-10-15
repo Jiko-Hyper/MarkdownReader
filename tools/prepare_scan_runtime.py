@@ -5,6 +5,8 @@ import importlib.metadata
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +31,11 @@ def main():
         archive.extractall(dest)
     shutil.copytree(site, dest/'Lib/site-packages', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     (dest/'python312._pth').write_text('python312.zip\n.\nLib/site-packages\nimport site\n', encoding='utf-8')
+    # 桌面扫描流程从不加载的依赖直接不随包发布；证据与清单见 tools/prune_scan_runtime.py。
+    subprocess.run([sys.executable, str(ROOT/'tools/prune_scan_runtime.py'),
+                    '--runtime', str(dest), '--apply'], check=True)
+    packages = {d.metadata['Name']: d.version
+                for d in importlib.metadata.distributions(path=[str(dest/'Lib/site-packages')])}
     home = dest/'models-home'
     shutil.copytree(args.models, home/'models', ignore=shutil.ignore_patterns('.cache', '.locks', '.git', '.mdl', '.msc'))
     # MinerU derives base_dir from MINERU_HOME at startup, including after relocation.

@@ -25,6 +25,7 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $gcc = (Get-Command gcc -ErrorAction SilentlyContinue).Source
 $windres = (Get-Command windres -ErrorAction SilentlyContinue).Source
 if (-not $gcc) { throw '找不到 gcc（MinGW-w64）。请安装后重试，或改用「启动 MDReader.bat」。' }
+if (-not $windres) { throw '找不到 windres，无法构建带正确名称和图标的启动器。' }
 
 # ------------------------------------------------------------ 版本号
 $coreText = Get-Content -LiteralPath (Join-Path $root 'mdreader\core.py') -Raw -Encoding UTF8
@@ -77,6 +78,7 @@ $manifest = Join-Path $OutDir 'MDReader.manifest'
 $rc = Join-Path $root 'tools\MDReader.rc'
 @"
 #include <winver.h>
+#pragma code_page(65001)
 
 1 ICON "$iconRc"
 1 24 "$($manifest.Replace('\','/'))"
@@ -119,7 +121,7 @@ $resourceTool = if ($windres) { $windres } else { $null }
 if ($resourceTool) {
     Push-Location (Join-Path $root 'tools')
     try {
-        & $resourceTool 'MDReader.rc' -O coff -o $res
+        & $resourceTool 'MDReader.rc' --codepage=65001 -O coff -o $res
         if ($LASTEXITCODE -ne 0) { throw 'windres 编译资源失败。' }
     } finally { Pop-Location }
 } else {
@@ -131,6 +133,35 @@ if ($resourceTool) { $gccArgs += $res }
 $gccArgs += @('-lcomctl32', '-lshell32', '-lole32', '-luuid')
 & $gcc @gccArgs
 if ($LASTEXITCODE -ne 0) { throw 'gcc 编译启动器失败。' }
+
+# A native uninstall entry adds only a few KB and uses Windows PowerShell.
+$uninstallRc = Join-Path $root 'tools\Uninstall.rc'
+$uninstallResource = Join-Path $OutDir 'Uninstall.res'
+$uninstallExe = Join-Path $OutDir '卸载.exe'
+$uninstallText = (Get-Content -LiteralPath $rc -Raw -Encoding UTF8).Replace('MDReader.exe','卸载.exe').Replace('MDReader - Markdown 阅读与项目整理','MDReader 完整卸载')
+[IO.File]::WriteAllText($uninstallRc,$uninstallText,[Text.UTF8Encoding]::new($true))
+Push-Location (Join-Path $root 'tools')
+try {
+    & $windres 'Uninstall.rc' --codepage=65001 -O coff -o $uninstallResource
+    if ($LASTEXITCODE -ne 0) { throw '卸载程序资源编译失败。' }
+} finally { Pop-Location }
+& $gcc '-Os' '-s' '-municode' '-mwindows' '-static-libgcc' '-finput-charset=UTF-8' '-o' $uninstallExe (Join-Path $root 'tools\uninstaller.c') $uninstallResource '-lshell32' '-luser32'
+if ($LASTEXITCODE -ne 0) { throw '卸载程序编译失败。' }
+Write-Host ("  卸载 EXE: {0:N0} KB" -f ((Get-Item -LiteralPath $uninstallExe).Length / 1KB))
+
+$installRc = Join-Path $root 'tools\Install.rc'
+$installResource = Join-Path $OutDir 'Install.res'
+$installExe = Join-Path $OutDir '安装.exe'
+$installText = (Get-Content -LiteralPath $rc -Raw -Encoding UTF8).Replace('MDReader.exe','安装.exe').Replace('MDReader - Markdown 阅读与项目整理','安装 MDReader')
+[IO.File]::WriteAllText($installRc,$installText,[Text.UTF8Encoding]::new($true))
+Push-Location (Join-Path $root 'tools')
+try {
+    & $windres 'Install.rc' --codepage=65001 -O coff -o $installResource
+    if ($LASTEXITCODE -ne 0) { throw '安装程序资源编译失败。' }
+} finally { Pop-Location }
+& $gcc '-Os' '-s' '-municode' '-mwindows' '-static-libgcc' '-finput-charset=UTF-8' '-o' $installExe (Join-Path $root 'tools\installer.c') $installResource '-lshell32' '-luser32'
+if ($LASTEXITCODE -ne 0) { throw '安装程序编译失败。' }
+Write-Host ("  安装 EXE: {0:N0} KB" -f ((Get-Item -LiteralPath $installExe).Length / 1KB))
 
 $size = (Get-Item -LiteralPath $exe).Length
 Write-Host ''
